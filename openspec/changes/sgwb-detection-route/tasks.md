@@ -59,16 +59,16 @@
 
 ## 3. Checkpointing for long runs (branch `feat/nuts-checkpointing`)
 
-- [ ] 3.1 Restructure the run harness to sample in segments via NumPyro's `post_warmup_state`, saving
+- [x] 3.1 Restructure the run harness to sample in segments via NumPyro's `post_warmup_state`, saving
       sampler state plus accumulated samples after each segment; verify a run with checkpointing
       disabled produces output identical to the current harness.
-- [ ] 3.2 Add resume-from-checkpoint, refusing on any model or sampler configuration mismatch with the
+- [x] 3.2 Add resume-from-checkpoint, refusing on any model or sampler configuration mismatch with the
       mismatch named; verify by a test that attempts a resume against a deliberately altered config.
-- [ ] 3.3 Verify statistical equivalence: a short run executed uninterrupted and the same run
+- [x] 3.3 Verify statistical equivalence: a short run executed uninterrupted and the same run
       interrupted-and-resumed under the same seed give posteriors agreeing within Monte Carlo error.
-- [ ] 3.4 Mark output from an incomplete run with an explicit partial flag and the sample count drawn;
+- [x] 3.4 Mark output from an incomplete run with an explicit partial flag and the sample count drawn;
       verify loaders surface the flag and that partial output fails the usability check.
-- [ ] 3.5 Measure checkpointing overhead at the configured interval on a representative array run and
+- [x] 3.5 Measure checkpointing overhead at the configured interval on a representative array run and
       record it; verify the overhead is within the documented tolerance.
 
 ## 4. Null calibration (branch `feat/sgwb-null-calibration`)

@@ -11,6 +11,7 @@ from argus import (
     prior_models,
 )
 from argus import io_manager
+from argus import checkpointing
 
 
 def setup_data_and_kalman_filter(config, logger, use_gw, signal_model="gwb"):
@@ -128,6 +129,14 @@ def run_inference(config_path, use_gw=True, timestamp=None):
     # Copy config file to output directory
     io_manager.copy_config_file(config_path, output_dir, logger)
 
+    # Checkpointing writes alongside the run's other outputs. Injected here rather than
+    # required in the config file so an existing config gains checkpointing by setting
+    # `enabled` alone, without having to restate paths the harness already knows.
+    if not config.has_section("Checkpointing"):
+        config.add_section("Checkpointing")
+    config.set("Checkpointing", "directory", output_dir)
+    config.set("Checkpointing", "output_id", output_id)
+
     # Setup data and Kalman filter
     pulsar_data, KF = setup_data_and_kalman_filter(
         config, logger, use_gw, signal_model=signal_model
@@ -193,6 +202,12 @@ def run_inference(config_path, use_gw=True, timestamp=None):
         )
 
     # Save results
+    if not checkpointing.is_complete(results):
+        logger.warning(
+            f"Sampling did not complete ({checkpointing.describe_progress(results)}). "
+            f"Results are saved and marked partial; they must not be used for a "
+            f"reported result without the usual convergence checks."
+        )
     results_path = io_manager.save_numpyro_results(
         results, output_dir, output_id, logger
     )

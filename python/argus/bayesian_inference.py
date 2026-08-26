@@ -22,7 +22,12 @@ import jax.random as random
 import numpyro
 import arviz as az
 from numpyro.infer import MCMC, NUTS
+import os
 import time
+
+import numpy as np
+
+from . import checkpointing
 
 from .parameter_sampling import (
     sample_gw_parameters,
@@ -783,27 +788,183 @@ def run_nuts_sampling(
                 f"Running {num_chains} chains sequentially ({n_devices} device(s) available)"
             )
 
-    sampler = MCMC(
-        kernel,
+    seed = config.getint("NUTS", "seed", fallback=42)
+    rng_key = random.PRNGKey(seed)
+
+    settings = checkpointing.get_checkpoint_settings(config)
+    if not settings["enabled"]:
+        sampler = MCMC(
+            kernel,
+            num_samples=num_samples,
+            num_warmup=num_warmup,
+            num_chains=num_chains,
+            chain_method=chain_method,
+            progress_bar=True,
+        )
+        sampler.run(rng_key)
+        sampler.print_summary()
+        return az.from_numpyro(sampler)
+
+    return _run_nuts_with_checkpointing(
+        kernel=kernel,
+        rng_key=rng_key,
         num_samples=num_samples,
         num_warmup=num_warmup,
         num_chains=num_chains,
         chain_method=chain_method,
-        progress_bar=True,
+        settings=settings,
+        config=config,
+        fingerprint_spec={
+            "mode": mode,
+            "n_pulsars": int(n_pulsars),
+            "num_samples": int(num_samples),
+            "num_warmup": int(num_warmup),
+            "num_chains": int(num_chains),
+            "seed": int(seed),
+            "nuts": {
+                key: nuts_info.get(key)
+                for key in (
+                    "target_accept_prob",
+                    "max_tree_depth",
+                    "dense_mass",
+                )
+            },
+            "priors": _prior_fingerprint(prior_specs),
+        },
     )
 
-    # Run sampling
-    seed = config.getint("NUTS", "seed", fallback=42)
-    rng_key = random.PRNGKey(seed)
-    sampler.run(rng_key)
 
-    # Print summary
+def _prior_fingerprint(prior_specs):
+    """A comparable summary of the prior specification for the resume check.
+
+    Distribution objects do not serialise usefully, so each is reduced to its type and
+    support. That is enough to catch the mistakes that matter — a moved prior bound, a
+    parameter switched between fixed and sampled, a different parameterization — while
+    staying stable across irrelevant details.
+    """
+    summary = {}
+    for name, spec in sorted(prior_specs.items()):
+        if isinstance(spec, dict):
+            summary[name] = {
+                key: (float(value) if isinstance(value, (int, float)) else str(value))
+                for key, value in sorted(spec.items())
+                if not isinstance(value, dict)
+            }
+        elif hasattr(spec, "low") and hasattr(spec, "high"):
+            # Bounds may be arrays (one entry per pulsar), so summarise rather than
+            # coerce to a scalar.
+            summary[name] = [
+                type(spec).__name__,
+                np.asarray(spec.low).ravel().tolist(),
+                np.asarray(spec.high).ravel().tolist(),
+            ]
+        elif isinstance(spec, (int, float, str, bool)) or spec is None:
+            summary[name] = spec
+        else:
+            summary[name] = type(spec).__name__
+    return summary
+
+
+def _run_nuts_with_checkpointing(
+    kernel,
+    rng_key,
+    num_samples,
+    num_warmup,
+    num_chains,
+    chain_method,
+    settings,
+    config,
+    fingerprint_spec,
+):
+    """Run NUTS in segments, saving state and accumulated draws after each.
+
+    Warmup is paid once, in the first segment. Later segments start from the previous
+    segment's final state via ``post_warmup_state``, so the chain continues rather than
+    restarting — the concatenated draws are the same chain a single uninterrupted run
+    would have produced.
+    """
+    output_dir = config.get("Checkpointing", "directory", fallback=None)
+    if not output_dir:
+        raise ValueError(
+            "Checkpointing is enabled but no 'directory' is set in [Checkpointing]."
+        )
+    os.makedirs(output_dir, exist_ok=True)
+    output_id = config.get("Checkpointing", "output_id", fallback="run")
+
+    fingerprint = checkpointing.run_fingerprint(fingerprint_spec)
+    resumed = None
+    if settings["resume"]:
+        resumed = checkpointing.load_checkpoint(output_dir, output_id, fingerprint)
+        if resumed is None:
+            print("No checkpoint found; starting from the beginning.")
+
+    sizes = checkpointing.segment_sizes(num_samples, settings["interval"])
+    accumulated = None
+    draws_done = 0
+    first_segment = 0
+
+    if resumed is not None:
+        accumulated = resumed["inference_data"]
+        draws_done = resumed["progress"]["draws_completed"]
+        first_segment = resumed["progress"]["segments_completed"]
+        print(
+            f"Resuming from checkpoint: {draws_done}/{num_samples} draws per chain "
+            f"({first_segment}/{len(sizes)} segments)."
+        )
+        if first_segment >= len(sizes):
+            print("Checkpoint is already complete; nothing to do.")
+            return checkpointing.mark_partial(
+                accumulated, True, draws_done, num_samples
+            )
+
+    segments = [accumulated] if accumulated is not None else []
+    state = resumed["sampler_state"] if resumed is not None else None
+
+    for index in range(first_segment, len(sizes)):
+        size = sizes[index]
+        sampler = MCMC(
+            kernel,
+            num_samples=size,
+            num_warmup=num_warmup,
+            num_chains=num_chains,
+            chain_method=chain_method,
+            progress_bar=True,
+        )
+        print(
+            f"Segment {index + 1}/{len(sizes)}: {size} draws per chain "
+            f"({draws_done}/{num_samples} done)."
+        )
+        if state is None:
+            sampler.run(rng_key)
+        else:
+            # Setting post_warmup_state makes run() skip adaptation and continue the
+            # chain from the stored state, which is what makes a resume a continuation
+            # rather than a restart.
+            sampler.post_warmup_state = state
+            sampler.run(sampler.post_warmup_state.rng_key)
+
+        state = sampler.last_state
+        draws_done += size
+        segments.append(az.from_numpyro(sampler))
+        combined = checkpointing.concat_segments(segments)
+        segments = [combined]
+
+        checkpointing.save_checkpoint(
+            output_dir,
+            output_id,
+            checkpointing.numpy_state(state),
+            combined,
+            fingerprint,
+            {
+                "draws_completed": draws_done,
+                "draws_target": num_samples,
+                "segments_completed": index + 1,
+                "segments_total": len(sizes),
+            },
+        )
+
     sampler.print_summary()
-
-    # Convert to ArviZ format
-    inf_data = az.from_numpyro(sampler)
-
-    return inf_data
+    return checkpointing.mark_partial(segments[0], True, draws_done, num_samples)
 
 
 def _jaxns_results_to_arviz(results, num_posterior_samples=10000):
