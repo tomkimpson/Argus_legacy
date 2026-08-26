@@ -86,6 +86,7 @@ def get_gw_parameter_priors(config):
             },
             # angular pivot frequency w = 2*pi*f_piv, used in the ha inversion
             "gw_pivot_w": 2.0 * math.pi * f_piv,
+            **_get_orf_path_specs(config),
         }
 
     # Helper function to create prior spec based on fixed/sampled setting
@@ -130,7 +131,69 @@ def get_gw_parameter_priors(config):
         "log10_ha_spec": log10_ha_spec,
         "log10_ha_transform_params": log10_ha_transform_params,
         "log10_gamma_a_spec": log10_gamma_a_spec,
+        **_get_orf_path_specs(config),
     }
+
+
+def _get_orf_path_specs(config):
+    """Parse the correlation-path settings from ``[PriorModel]``.
+
+    The correlation path embeds the Hellings-Downs and CURN hypotheses in one
+    continuous family ``C(ε) = (1 - ε)·I + ε·C_HD`` (see
+    ``gravitational_waves.correlation_path``). ``orf_path`` selects the mode:
+
+    - ``off`` (fallback): no path. The Hellings-Downs matrix is used as supplied
+      and the likelihood is byte-identical to the pre-path behavior.
+    - ``fixed``: ``ε`` is held at ``orf_epsilon_value`` — one rung of the path
+      sampling ladder (estimator B).
+    - ``sampled``: ``ε`` is sampled under ``Uniform(orf_epsilon_min,
+      orf_epsilon_max)``, fallback bounds (0, 1) — the single-run generalised
+      Savage-Dickey route (estimator A).
+
+    A genuinely uniform prior is used rather than the N(0,1) reparameterization
+    the other parameters take, because the Bayes factor is read from the prior and
+    posterior densities *at the endpoints*: a uniform prior makes the prior terms
+    cancel, and bounds keep ``C(ε)`` positive definite (outside [0, 1] the
+    interpolation can over-weight the negative Hellings-Downs off-diagonals).
+
+    Returns
+    -------
+    dict
+        Keys ``orf_path``, ``orf_epsilon_value`` and ``orf_epsilon_bounds``.
+        With the path off, the latter two are None.
+    """
+    orf_path = config.get("PriorModel", "orf_path", fallback="off").strip().lower()
+
+    if orf_path == "off":
+        return {
+            "orf_path": "off",
+            "orf_epsilon_value": None,
+            "orf_epsilon_bounds": None,
+        }
+
+    if orf_path == "fixed":
+        return {
+            "orf_path": "fixed",
+            "orf_epsilon_value": config.getfloat("PriorModel", "orf_epsilon_value"),
+            "orf_epsilon_bounds": None,
+        }
+
+    if orf_path == "sampled":
+        low = config.getfloat("PriorModel", "orf_epsilon_min", fallback=0.0)
+        high = config.getfloat("PriorModel", "orf_epsilon_max", fallback=1.0)
+        if not high > low:
+            raise ValueError(
+                f"orf_epsilon_max ({high}) must exceed orf_epsilon_min ({low})."
+            )
+        return {
+            "orf_path": "sampled",
+            "orf_epsilon_value": None,
+            "orf_epsilon_bounds": (low, high),
+        }
+
+    raise ValueError(
+        f"Unknown orf_path '{orf_path}'. Expected 'off', 'fixed' or 'sampled'."
+    )
 
 
 def get_pulsar_noise_priors(config, n_pulsars, sigma_p_array, gamma_p_array):

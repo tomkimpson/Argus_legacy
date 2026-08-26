@@ -100,6 +100,44 @@ def hellings_downs(θ):
         return (3 / 2) * x * np.log(x) - x / 4 + 0.5
 
 
+def correlation_path(hd_correlation_matrix, epsilon):
+    """Interpolate between uncorrelated (CURN) and Hellings-Downs correlation.
+
+    Embeds the two competing SGWB correlation hypotheses in a single continuous
+    family::
+
+        C(ε) = (1 - ε) · I + ε · C_HD
+
+    so that ``ε = 0`` is CURN (identity overlap reduction function) exactly and
+    ``ε = 1`` is Hellings-Downs exactly, with every other model input shared. A
+    Bayes factor between the two hypotheses can then be obtained either from the
+    posterior density of ``ε`` at its endpoints (generalised Savage-Dickey) or by
+    integrating ``∂ log L / ∂ε`` along a ladder of fixed ``ε`` (path sampling).
+
+    The Hellings-Downs matrix has a unit diagonal (a pulsar's correlation with
+    itself is 1), so the interpolation leaves the diagonal at 1 for every ``ε``:
+    only the cross-correlations are scaled. ``ε`` therefore moves power between
+    the correlated and uncorrelated hypotheses without changing the GW auto-power.
+
+    Parameters
+    ----------
+    hd_correlation_matrix : jax.Array
+        Hellings-Downs correlation matrix, shape (Npsr, Npsr), unit diagonal.
+    epsilon : float or jax.Array
+        Interpolation coordinate. 0 gives the identity, 1 gives the input matrix.
+        Traceable, so it may be a sampled parameter.
+
+    Returns
+    -------
+    jax.Array
+        The interpolated correlation matrix, shape (Npsr, Npsr).
+    """
+    identity = jnp.eye(
+        hd_correlation_matrix.shape[0], dtype=hd_correlation_matrix.dtype
+    )
+    return (1.0 - epsilon) * identity + epsilon * hd_correlation_matrix
+
+
 # =============================================================================
 # Continuous Wave (CW) signal model functions
 # All implemented in JAX for autodiff/JIT compatibility

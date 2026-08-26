@@ -2,6 +2,7 @@
 
 import numpy as np
 
+from argus import gravitational_waves
 from argus.model import get_F, get_Q, precompute_R_matrices, precompute_H_matrix
 from functools import partial
 import jax
@@ -215,6 +216,20 @@ def _update(
 
 def _compute_sigma_matrix(h2, γa, Γ):
     return (h2 / 12) * γa * Γ
+
+
+def _effective_orf(hellings_downs_matrix, orf_epsilon):
+    """Resolve the overlap reduction function actually used by the filter.
+
+    With the correlation path switched off (``orf_epsilon is None``) the static
+    Hellings-Downs matrix is returned unchanged, so the default likelihood path is
+    untouched. Otherwise the matrix is interpolated towards the identity, which is
+    what lets a single model span the HD and CURN hypotheses (see
+    ``gravitational_waves.correlation_path``).
+    """
+    if orf_epsilon is None:
+        return hellings_downs_matrix
+    return gravitational_waves.correlation_path(hellings_downs_matrix, orf_epsilon)
 
 
 def _initialize_kalman_filter(nx, Npsr, P_eps, σa2, γa, σp2, γp):
@@ -453,7 +468,8 @@ def _run_kalman_filter_scan(
     observed at epoch t and 0.0 if it is absent. An all-ones mask reproduces the
     original every-pulsar-present likelihood exactly.
     """
-    σa2 = _compute_sigma_matrix(θ.ha**2, θ.γa, hellings_downs_matrix)
+    Γ = _effective_orf(hellings_downs_matrix, θ.orf_epsilon)
+    σa2 = _compute_sigma_matrix(θ.ha**2, θ.γa, Γ)
 
     x0, P0 = _initialize_kalman_filter(n_states, Npsr, P_eps, σa2, θ.γa, θ.σp**2, θ.γp)
 
@@ -564,7 +580,8 @@ def _run_kalman_filter_marginal(
     to an additive constant (harmless for posteriors and for Bayes factors between models
     sharing the same timing model, where it cancels). `P_eps_inv` is then unused.
     """
-    σa2 = _compute_sigma_matrix(θ.ha**2, θ.γa, hellings_downs_matrix)
+    Γ = _effective_orf(hellings_downs_matrix, θ.orf_epsilon)
+    σa2 = _compute_sigma_matrix(θ.ha**2, θ.γa, Γ)
 
     x0, P0 = _initialize_dynamic_kalman_filter(Npsr, σa2, θ.γa, θ.σp**2, θ.γp)
 

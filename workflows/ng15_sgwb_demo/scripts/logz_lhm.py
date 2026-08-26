@@ -54,6 +54,44 @@ from scipy.special import logsumexp
 
 LN2PI = math.log(2.0 * math.pi)
 
+# Reliability thresholds. These were already applied implicitly when choosing the
+# reported shrinkage; they are named here so a run can say *which* check failed
+# instead of returning a bare number (or a nan) that looks like a result.
+MIN_ESS_FRACTION = 0.1  # effective sample size of the importance weights
+MAX_WEIGHT_FRACTION = 0.1  # no single draw may dominate the importance sum
+MAX_VOV_RELATIVE = 0.5  # McEwen's variance-of-variance relative error
+MIN_HEALTHY_SHRINK_VALUES = 2  # a plateau needs at least two points
+MAX_PLATEAU_SPREAD = 1.0  # nats, across the healthy shrinkage values
+MAX_MATCHED_WEIGHT_FRACTION = 0.25  # looser, for the cancelling lnB difference
+
+
+def assess_reliability(res):
+    """Name the diagnostics a single-model LHM estimate fails, if any.
+
+    The estimator is known to break down as dimension grows: at 68-D on MDC2 the
+    importance weights collapse onto a single draw, no shrinkage value is healthy,
+    and the reported logZ is meaningless. Before this gate existed that failure
+    surfaced as a nan, which is indistinguishable at a glance from a bug. Now it
+    surfaces as an explicit refusal naming the cause.
+    """
+    failures = []
+    if not np.isfinite(res["log_Z_mean"]) or not np.isfinite(res["log_Z_uncert"]):
+        failures.append("non_finite_estimate")
+    if res["min_ess_frac"] < MIN_ESS_FRACTION:
+        failures.append("effective_sample_size")
+    if res["max_weight_frac"] > MAX_WEIGHT_FRACTION:
+        failures.append("importance_weight_degeneracy")
+    if res["max_vov_rel"] > MAX_VOV_RELATIVE:
+        failures.append("variance_of_variance")
+    if res["n_healthy_shrink"] < MIN_HEALTHY_SHRINK_VALUES:
+        failures.append("no_shrinkage_plateau")
+    elif (
+        not np.isfinite(res["plateau_spread"])
+        or res["plateau_spread"] > MAX_PLATEAU_SPREAD
+    ):
+        failures.append("plateau_not_flat")
+    return failures
+
 
 def load_latent_and_loglik(nc_path):
     """Load the unit-Gaussian latent vectors and per-draw log-likelihood from a ``.nc``.
@@ -230,7 +268,7 @@ def run_one(nc_path, shrink_grid):
     else:
         plateau_spread = float("nan")
 
-    return {
+    result = {
         "results_path": nc_path,
         "ndim": int(ndim),
         "n_chain": int(n_chain),
@@ -248,6 +286,10 @@ def run_one(nc_path, shrink_grid):
         "sweep": [{k: v for k, v in e.items() if k != "folds"} for e in sweep],
     }
 
+    result["failed_diagnostics"] = assess_reliability(result)
+    result["reliable"] = len(result["failed_diagnostics"]) == 0
+    return result
+
 
 def print_report(res):
     print(f"\n=== LHM logZ : {res['results_path']} ===")
@@ -263,11 +305,19 @@ def print_report(res):
             f"{e['swap_spread']:8.4f} {e['min_ess_frac']:8.3f} "
             f"{e['max_weight_frac']:7.3f} {e['max_vov_rel']:7.3f}"
         )
-    print(
-        f"\n  -> log_Z = {res['log_Z_mean']:.4f} +/- {res['log_Z_uncert']:.4f} "
-        f"(shrink={res['chosen_shrink']:.2f}, {res['n_healthy_shrink']} healthy "
-        f"shrink values, plateau spread={res['plateau_spread']:.4f})"
-    )
+    if res.get("reliable", True):
+        print(
+            f"\n  -> log_Z = {res['log_Z_mean']:.4f} +/- {res['log_Z_uncert']:.4f} "
+            f"(shrink={res['chosen_shrink']:.2f}, {res['n_healthy_shrink']} healthy "
+            f"shrink values, plateau spread={res['plateau_spread']:.4f})   [reliable]"
+        )
+    else:
+        print(f"\n  -> NOT USABLE: failed " f"{', '.join(res['failed_diagnostics'])}")
+        print(
+            f"     (raw value {res['log_Z_mean']:.4f} +/- {res['log_Z_uncert']:.4f} "
+            f"at shrink={res['chosen_shrink']:.2f} is reported for diagnosis only, "
+            f"not as a result)"
+        )
 
 
 def main():
@@ -350,29 +400,68 @@ def main():
             b = sweep1[s] - sweep2[s]
             # A shrink is on the plateau only if BOTH models are non-degenerate
             # there (no single draw dominating the importance sum).
-            healthy = maxw1[s] <= 0.25 and maxw2[s] <= 0.25
+            healthy = (
+                maxw1[s] <= MAX_MATCHED_WEIGHT_FRACTION
+                and maxw2[s] <= MAX_MATCHED_WEIGHT_FRACTION
+            )
             flag = "" if healthy else "  (degenerate, excluded)"
             if healthy:
                 lnb_plateau.append(b)
             print(f"  {s:7.2f} {sweep1[s]:12.4f} {sweep2[s]:12.4f} {b:9.4f}{flag}")
-        lnb_arr = np.array(lnb_plateau)
-        lnB = float(lnb_arr.mean())
-        sigB = float(max(lnb_arr.std(), 0.02))  # plateau spread as the error
-        print(
-            f"\n  lnB = logZ1 - logZ2 = {lnB:+.3f} +/- {sigB:.3f}  "
-            f"(matched-shrinkage plateau over {len(lnb_arr)} values)"
-        )
-        print(f"  odds favouring model1 ~ e^lnB = {math.exp(lnB):.1f} : 1")
-        print(
-            f"  (Kass-Raftery 2lnB: <2 bare, 2-6 positive, 6-10 strong, "
-            f">10 very strong; here 2lnB={2*lnB:.1f})"
-        )
+
+        # Every shrinkage degenerate leaves nothing to average. Before this guard
+        # that produced a bare nan from the mean of an empty array -- which is how
+        # the 68-D MDC2 Stage C failure first surfaced. Refuse instead.
+        lnb_failures = []
+        if not lnb_plateau:
+            lnb_failures.append("no_matched_shrinkage_plateau")
+            lnB = float("nan")
+            sigB = float("nan")
+        else:
+            lnb_arr = np.array(lnb_plateau)
+            lnB = float(lnb_arr.mean())
+            sigB = float(max(lnb_arr.std(), 0.02))  # plateau spread as the error
+            if len(lnb_arr) < MIN_HEALTHY_SHRINK_VALUES:
+                lnb_failures.append("matched_plateau_too_short")
+            if not np.isfinite(lnB):
+                lnb_failures.append("non_finite_estimate")
+
+        # Both single-model estimates feed the difference. Their own degeneracies
+        # largely cancel at matched shrinkage, which is the whole point of the
+        # matched construction, so they are recorded but do not on their own veto
+        # the Bayes factor.
+        lnb_reliable = not lnb_failures
+
+        if lnb_reliable:
+            print(
+                f"\n  lnB = logZ1 - logZ2 = {lnB:+.3f} +/- {sigB:.3f}  "
+                f"(matched-shrinkage plateau over {len(lnb_plateau)} values)   "
+                f"[reliable]"
+            )
+            print(f"  odds favouring model1 ~ e^lnB = {math.exp(lnB):.1f} : 1")
+            print(
+                f"  (Kass-Raftery 2lnB: <2 bare, 2-6 positive, 6-10 strong, "
+                f">10 very strong; here 2lnB={2*lnB:.1f})"
+            )
+        else:
+            print(f"\n  lnB NOT USABLE: failed {', '.join(lnb_failures)}")
+            print(
+                "     every shrinkage value was degenerate in at least one model, "
+                "so there is no plateau to read a Bayes factor from. This is the "
+                "expected high-dimensional failure of the learned harmonic mean; "
+                "use the correlation-path estimators instead "
+                "(lnb_savage_dickey.py / lnb_path_sampling.py)."
+            )
+
         payload = {
             "model1_path": res1["results_path"],
             "model2_path": res2["results_path"],
             "lnB_mean": lnB,
             "lnB_uncert": sigB,
-            "odds_model1": math.exp(lnB),
+            "reliable": lnb_reliable,
+            "failed_diagnostics": lnb_failures,
+            "n_matched_plateau": len(lnb_plateau),
+            "odds_model1": math.exp(lnB) if lnb_reliable else None,
             "matched_shrink_lnB": {
                 str(s): sweep1[s] - sweep2[s] for s in args.shrink_grid
             },
@@ -386,6 +475,8 @@ def main():
         print(f"\n  wrote {args.out}")
 
     if verdict == "FAIL":
+        raise SystemExit(1)
+    if not payload.get("reliable", True):
         raise SystemExit(1)
 
 

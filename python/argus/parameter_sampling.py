@@ -148,6 +148,43 @@ def sample_gw_parameters(prior_specs):
     return log10_ha, log10_gamma_a, γa
 
 
+def sample_orf_epsilon(prior_specs):
+    """Sample (or fix) the correlation-path coordinate ``ε``.
+
+    ``ε`` interpolates the overlap reduction function between the identity (CURN,
+    ``ε = 0``) and Hellings-Downs (``ε = 1``); see
+    ``gravitational_waves.correlation_path``. Returns None when the path is off,
+    which leaves the likelihood on its original code path.
+
+    Parameters
+    ----------
+    prior_specs : dict
+        Prior distributions dictionary.
+
+    Returns
+    -------
+    float, jax.Array or None
+        The value of ``ε`` to hand to the filter, or None when the path is off.
+    """
+    orf_path = prior_specs.get("orf_path", "off")
+
+    if orf_path == "off":
+        return None
+
+    if orf_path == "fixed":
+        # One rung of the path-sampling ladder: ε is a constant, recorded as a
+        # deterministic so every run's outputs say where on the path they sit.
+        return numpyro.deterministic(
+            "orf_epsilon", jnp.asarray(prior_specs["orf_epsilon_value"])
+        )
+
+    if orf_path == "sampled":
+        low, high = prior_specs["orf_epsilon_bounds"]
+        return numpyro.sample("orf_epsilon", dist.Uniform(low, high))
+
+    raise ValueError(f"Unknown orf_path '{orf_path}'.")
+
+
 def sample_hierarchical_gamma_parameters(hierarchical_specs, n_pulsars):
     """Sample hierarchical gamma parameters with gradient balancing.
 
@@ -547,6 +584,10 @@ def count_free_parameters(prior_specs, n_pulsars):
         # GW spectral index parameter - free if it's a distribution (not fixed)
         if isinstance(prior_specs["log10_gamma_a_spec"], tfpd.Distribution):
             count += 1
+
+    # Correlation-path coordinate (free only when sampled)
+    if prior_specs.get("orf_path") == "sampled":
+        count += 1
 
     # Pulsar red noise parameters
     if prior_specs.get("empirical_specs") is not None:

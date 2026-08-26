@@ -26,6 +26,7 @@ import time
 
 from .parameter_sampling import (
     sample_gw_parameters,
+    sample_orf_epsilon,
     sample_cw_parameters,
     sample_chi_parameters,
     sample_pulsar_noise_parameters,
@@ -53,6 +54,10 @@ class Parameters:
     # Measurement noise parameters
     EFAC: jnp.ndarray  # Error factors
     EQUAD: jnp.ndarray  # Extra quadrature noise
+
+    # Correlation-path coordinate: None disables the path and uses the Hellings-Downs
+    # matrix as supplied; 0 gives CURN (identity ORF), 1 gives Hellings-Downs.
+    orf_epsilon: float = None
 
 
 @struct.dataclass
@@ -337,7 +342,14 @@ def display_prior_summary(prior_specs, n_pulsars, logger=None):
 
 
 def log_likelihood_fn(
-    kalman_filter, log10_ha, log10_gamma_a, log10_γp, log10_σp, efac, equad
+    kalman_filter,
+    log10_ha,
+    log10_gamma_a,
+    log10_γp,
+    log10_σp,
+    efac,
+    equad,
+    orf_epsilon=None,
 ):
     """Calculate log likelihood for NumPyro sampling.
 
@@ -357,6 +369,9 @@ def log_likelihood_fn(
         EFAC values
     equad : jax.Array
         EQUAD values
+    orf_epsilon : float, jax.Array or None
+        Correlation-path coordinate. None (default) leaves the overlap reduction
+        function as supplied; 0 gives CURN, 1 gives Hellings-Downs.
 
     Returns
     -------
@@ -369,7 +384,14 @@ def log_likelihood_fn(
     σp = 10.0**log10_σp
 
     params = Parameters(
-        log10_gamma_a=log10_gamma_a, γa=γa, ha=ha, γp=γp, σp=σp, EFAC=efac, EQUAD=equad
+        log10_gamma_a=log10_gamma_a,
+        γa=γa,
+        ha=ha,
+        γp=γp,
+        σp=σp,
+        EFAC=efac,
+        EQUAD=equad,
+        orf_epsilon=orf_epsilon,
     )
 
     return kalman_filter.get_likelihood(params)
@@ -392,12 +414,20 @@ def numpyro_model(kalman_filter, prior_specs, n_pulsars):
     """
     # Sample parameters using specialized functions
     log10_ha, log10_gamma_a, γa = sample_gw_parameters(prior_specs)
+    orf_epsilon = sample_orf_epsilon(prior_specs)
     log10_γp, log10_σp = sample_pulsar_noise_parameters(prior_specs, n_pulsars)
     efac, equad = sample_measurement_noise_parameters(prior_specs, n_pulsars)
 
     # Calculate log likelihood
     log_likelihood = log_likelihood_fn(
-        kalman_filter, log10_ha, log10_gamma_a, log10_γp, log10_σp, efac, equad
+        kalman_filter,
+        log10_ha,
+        log10_gamma_a,
+        log10_γp,
+        log10_σp,
+        efac,
+        equad,
+        orf_epsilon=orf_epsilon,
     )
 
     # Add likelihood to the model
