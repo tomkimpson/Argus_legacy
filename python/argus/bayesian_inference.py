@@ -22,6 +22,7 @@ import jax.random as random
 import numpyro
 import arviz as az
 from numpyro.infer import MCMC, NUTS
+import hashlib
 import os
 import time
 
@@ -792,6 +793,33 @@ def run_nuts_sampling(
     rng_key = random.PRNGKey(seed)
 
     settings = checkpointing.get_checkpoint_settings(config)
+    warm_start = checkpointing.get_warm_start_settings(config)
+
+    if warm_start["enabled"]:
+        # Skip adaptation entirely and continue from the parent run's tuned state.
+        # Warmup is roughly half the wall-clock of a run, and every scramble in the
+        # null ensemble shares this run's geometry, so re-adapting for each is the
+        # largest avoidable cost in that campaign.
+        state = checkpointing.load_warm_start_state(
+            warm_start["state_path"], warm_start["seed"]
+        )
+        print(
+            f"Warm start from {warm_start['state_path']} "
+            f"(seed {warm_start['seed']}); skipping warmup."
+        )
+        sampler = MCMC(
+            kernel,
+            num_samples=num_samples,
+            num_warmup=0,
+            num_chains=num_chains,
+            chain_method=chain_method,
+            progress_bar=True,
+        )
+        sampler.post_warmup_state = state
+        sampler.run(sampler.post_warmup_state.rng_key)
+        sampler.print_summary()
+        return az.from_numpyro(sampler)
+
     if not settings["enabled"]:
         sampler = MCMC(
             kernel,
@@ -830,8 +858,34 @@ def run_nuts_sampling(
                 )
             },
             "priors": _prior_fingerprint(prior_specs),
+            "data": _data_fingerprint(kalman_filter),
         },
     )
+
+
+def _data_fingerprint(kalman_filter):
+    """Identify the data and correlation structure the run is conditioned on.
+
+    Without this a resume would be judged only on the config, and two runs whose
+    overlap reduction functions differ -- an HD run and a sky-scrambled null, say --
+    would look interchangeable, because the ORF reaches the filter through the data
+    rather than through any config key. Concatenating their draws would be silent and
+    undetectable, which is exactly what the fingerprint exists to prevent.
+    """
+    orf = np.asarray(kalman_filter.hellings_downs_matrix)
+    return {
+        "n_pulsars": int(kalman_filter.Npsr),
+        "n_epochs": int(np.asarray(kalman_filter.jax_data).shape[0]),
+        "m_sum": int(kalman_filter.M_sum),
+        "orf_sha": hashlib.sha256(
+            np.ascontiguousarray(orf, dtype=np.float64).tobytes()
+        ).hexdigest()[:16],
+        "data_sha": hashlib.sha256(
+            np.ascontiguousarray(
+                np.asarray(kalman_filter.jax_data), dtype=np.float64
+            ).tobytes()
+        ).hexdigest()[:16],
+    }
 
 
 def _prior_fingerprint(prior_specs):

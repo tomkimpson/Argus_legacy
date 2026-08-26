@@ -73,10 +73,10 @@
 
 ## 4. Null calibration (branch `feat/sgwb-null-calibration`)
 
-- [ ] 4.1 Add a sky-scramble ORF generator that draws random sky positions, rebuilds the correlation
+- [x] 4.1 Add a sky-scramble ORF generator that draws random sky positions, rebuilds the correlation
       matrix and accepts a scramble only below the ORF match threshold; verify the accepted ensemble's
       match distribution and that per-pulsar noise, epochs and residuals are untouched.
-- [ ] 4.2 Add a warm-start mode that reuses a completed run's tuned step size and mass matrix and
+- [x] 4.2 Add a warm-start mode that reuses a completed run's tuned step size and mass matrix and
       samples without re-adaptation; verify it reproduces the parent run's posterior on the unscrambled
       ORF.
 - [ ] 4.3 Run a small pilot set of scrambles at 33 pulsars both warm-started and with full warmup;

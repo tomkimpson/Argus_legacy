@@ -229,3 +229,67 @@ def numpy_state(sampler_state):
         lambda leaf: np.asarray(leaf) if hasattr(leaf, "shape") else leaf,
         sampler_state,
     )
+
+
+# ---------------------------------------------------------------------------
+# Warm starts
+# ---------------------------------------------------------------------------
+
+
+def get_warm_start_settings(config):
+    """Read the ``[WarmStart]`` section.
+
+    A warm start reuses a completed run's tuned step size, mass matrix and final
+    position, and samples without re-adapting. It exists for the null calibration: every
+    sky scramble shares its geometry with the real run, and warmup is roughly half the
+    wall-clock, so repeating adaptation for each of an ensemble of scrambles is the
+    single largest avoidable cost in that campaign.
+
+    Distinct from ``resume``, which continues *the same* run and refuses any change of
+    model. A warm start is deliberately applied to a *different* target -- a scrambled
+    overlap reduction function -- so it carries no fingerprint check. That makes it the
+    caller's responsibility to warm-start only from a run whose geometry genuinely
+    matches, and it must be validated against full-warmup runs before an ensemble is
+    trusted.
+    """
+    state_path = config.get("WarmStart", "state_path", fallback="").strip()
+    if not state_path:
+        return {"enabled": False, "state_path": None, "seed": None}
+    return {
+        "enabled": True,
+        "state_path": state_path,
+        "seed": config.getint("WarmStart", "seed", fallback=0),
+    }
+
+
+def load_warm_start_state(state_path, seed):
+    """Load a sampler state to warm-start from, with a fresh random stream.
+
+    The stored state carries the parent run's ``rng_key``; reusing it verbatim would
+    replay the parent's randomness, so every scramble in an ensemble would follow
+    correlated trajectories and the null distribution would be too narrow. The key is
+    replaced by one derived from this run's seed while the tuned step size, mass matrix
+    and position are kept.
+    """
+    import jax
+
+    if not os.path.exists(state_path):
+        raise ValueError(f"Warm-start state not found: {state_path}")
+
+    with open(state_path, "rb") as handle:
+        payload = pickle.load(handle)
+
+    state = payload.get("sampler_state")
+    if state is None:
+        raise ValueError(
+            f"{state_path} does not contain a sampler state; it is not a checkpoint."
+        )
+
+    fresh_key = jax.random.PRNGKey(seed)
+    if hasattr(state, "rng_key"):
+        parent_key = np.asarray(state.rng_key)
+        if parent_key.ndim > 1:
+            # One key per chain: keep the leading chain dimension.
+            fresh_key = jax.random.split(fresh_key, parent_key.shape[0])
+        state = state._replace(rng_key=fresh_key)
+    return state
