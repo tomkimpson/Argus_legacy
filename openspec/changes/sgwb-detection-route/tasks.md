@@ -38,23 +38,23 @@
 
 ## 2. Masks on the marginalized filter (branch `feat/masked-marginal-filter`)
 
-- [ ] 2.1 Port masked updates into `_run_kalman_filter_marginal` using the sequential path's
+- [x] 2.1 Port masked updates into `_run_kalman_filter_marginal` using the sequential path's
       `H_eff = M H`, `R_eff = M R Mᵀ + diag(1−M)` construction, applied consistently to the
       timing-model information accumulators; verify shapes stay static under `scan`/JIT.
-- [ ] 2.2 Verify an all-ones mask on the marginal path reproduces the existing goldens (63618.93 and
+- [x] 2.2 Verify an all-ones mask on the marginal path reproduces the existing goldens (63618.93 and
       59420.06) bit-for-bit.
-- [ ] 2.3 Verify masked marginal and masked sequential log-likelihoods agree on the same masked
+- [x] 2.3 Verify masked marginal and masked sequential log-likelihoods agree on the same masked
       dataset at matched timing-prior settings, to the tolerance documented for the unmasked case.
-- [ ] 2.4 Verify an all-zeros-mask pulsar changes the log-likelihood only by a constant independent of
+- [x] 2.4 Verify an all-zeros-mask pulsar changes the log-likelihood only by a constant independent of
       the sampled parameters (test against the same dataset with that pulsar removed).
-- [ ] 2.5 Verify an epoch with no observed pulsars propagates the state without an update and leaves
+- [x] 2.5 Verify an epoch with no observed pulsars propagates the state without an update and leaves
       the log-likelihood unchanged.
-- [ ] 2.6 Verify gradients of the masked marginal log-likelihood are finite for every sampled
+- [x] 2.6 Verify gradients of the masked marginal log-likelihood are finite for every sampled
       parameter, including at partial and empty epochs.
-- [ ] 2.7 Remove the `use_marginal` fallback guard (`jax_kalman_filter.py:719–731`) so masked data
+- [x] 2.7 Remove the `use_marginal` fallback guard (`jax_kalman_filter.py:719–731`) so masked data
       select the marginal path with no warning and an explicit request succeeds; verify by updating
       the existing guard tests to the new behaviour and running the full suite.
-- [ ] 2.8 Benchmark masked marginal vs masked sequential on the 68-pulsar union grid and record the
+- [x] 2.8 Benchmark masked marginal vs masked sequential on the 68-pulsar union grid and record the
       speedup; verify the marginal path is at least as fast before the guard removal is merged.
 
 ## 3. Checkpointing for long runs (branch `feat/nuts-checkpointing`)

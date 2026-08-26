@@ -290,14 +290,16 @@ class TestMaskedUpdate:
 class TestMaskedFilterEquivalence:
     """Filter-level tests that masking is the correct missing-observation treatment."""
 
+    @pytest.mark.parametrize("use_marginal", [False, True])
     @patch("argus.io_manager.get_argus_logger")
     def test_all_ones_mask_matches_default(
-        self, mock_logger, sample_pulsar_data, sample_noise_parameters
+        self, mock_logger, use_marginal, sample_pulsar_data, sample_noise_parameters
     ):
         """Threading an explicit all-ones mask through the scan changes nothing.
 
-        The baseline pins use_marginal=False: a mask forces the sequential path, so
-        the bit-for-bit comparison must run the sequential scan on both sides.
+        Checked on both backends: masks used to be wired into the sequential filter
+        only, so this comparison had to pin use_marginal=False. Now the marginalized
+        filter supports them too and must be equally unaffected.
         """
         mock_logger.return_value = Mock()
 
@@ -312,7 +314,7 @@ class TestMaskedFilterEquivalence:
         )
 
         kf_default = jax_kalman_filter.JaxKalmanFilter(
-            data=sample_pulsar_data, use_gw=True, use_marginal=False
+            data=sample_pulsar_data, use_gw=True, use_marginal=use_marginal
         )
         ll_default = kf_default.get_likelihood(params)
 
@@ -322,7 +324,9 @@ class TestMaskedFilterEquivalence:
         data_masked = dict(sample_pulsar_data)
         data_masked["processed_residuals"] = residuals
 
-        kf_masked = jax_kalman_filter.JaxKalmanFilter(data=data_masked, use_gw=True)
+        kf_masked = jax_kalman_filter.JaxKalmanFilter(
+            data=data_masked, use_gw=True, use_marginal=use_marginal
+        )
         ll_masked = kf_masked.get_likelihood(params)
 
         assert jnp.allclose(ll_default, ll_masked, rtol=0, atol=0)
@@ -392,8 +396,9 @@ class TestMaskedFilterEquivalence:
         np.testing.assert_allclose(ll_ext + offset, ll_base, rtol=1e-8, atol=1e-6)
 
     @patch("argus.io_manager.get_argus_logger")
+    @pytest.mark.parametrize("use_marginal", [False, True])
     def test_absent_pulsar_data_is_ignored(
-        self, mock_logger, sample_pulsar_data, sample_noise_parameters
+        self, mock_logger, use_marginal, sample_pulsar_data, sample_noise_parameters
     ):
         """The likelihood must not depend on a pulsar's data where it is masked absent.
 
@@ -431,7 +436,7 @@ class TestMaskedFilterEquivalence:
                 "mask": mask,
             }
             return jax_kalman_filter.JaxKalmanFilter(
-                data=data, use_gw=True
+                data=data, use_gw=True, use_marginal=use_marginal
             ).get_likelihood(params)
 
         ll_a = ll_with(base["residuals"][:, 1], base["errors"][:, 1])
@@ -440,8 +445,8 @@ class TestMaskedFilterEquivalence:
         assert jnp.array_equal(ll_a, ll_b)
 
 
-class TestMaskMarginalGuard:
-    """Backend resolution: masks are only supported on the sequential filter."""
+class TestMaskBackendSelection:
+    """Backend resolution: both filters support masks, so the fast one is the default."""
 
     @staticmethod
     def _with_mask(sample_pulsar_data):
@@ -458,23 +463,60 @@ class TestMaskMarginalGuard:
         assert kf.use_marginal is True
 
     @patch("argus.io_manager.get_argus_logger")
-    def test_mask_falls_back_to_sequential(self, mock_logger, sample_pulsar_data):
-        """A mask with use_marginal unset must select the sequential filter."""
+    def test_mask_selects_marginal(self, mock_logger, sample_pulsar_data):
+        """A mask no longer forces the slower sequential filter.
+
+        Masked data used to fall back to the sequential path, which gave up the
+        marginal filter's speedup on exactly the runs that need it most (union-grid
+        array data, where most of the grid is unobserved).
+        """
         mock_logger.return_value = Mock()
         kf = jax_kalman_filter.JaxKalmanFilter(
             data=self._with_mask(sample_pulsar_data), use_gw=True
         )
+        assert kf.use_marginal is True
+
+    @patch("argus.io_manager.get_argus_logger")
+    def test_explicit_marginal_with_mask_succeeds(
+        self, mock_logger, sample_pulsar_data
+    ):
+        """Explicitly requesting the marginal filter with a mask is now supported."""
+        mock_logger.return_value = Mock()
+        kf = jax_kalman_filter.JaxKalmanFilter(
+            data=self._with_mask(sample_pulsar_data),
+            use_gw=True,
+            use_marginal=True,
+        )
+        assert kf.use_marginal is True
+
+    @patch("argus.io_manager.get_argus_logger")
+    def test_sequential_backend_still_selectable(self, mock_logger, sample_pulsar_data):
+        """The sequential path remains available as the cross-check backend."""
+        mock_logger.return_value = Mock()
+        kf = jax_kalman_filter.JaxKalmanFilter(
+            data=self._with_mask(sample_pulsar_data),
+            use_gw=True,
+            use_marginal=False,
+        )
         assert kf.use_marginal is False
 
     @patch("argus.io_manager.get_argus_logger")
-    def test_explicit_marginal_with_mask_raises(self, mock_logger, sample_pulsar_data):
-        """Explicitly requesting the marginal filter with a mask is an error."""
+    def test_diffuse_rejects_a_fully_unobserved_pulsar(
+        self, mock_logger, sample_pulsar_data
+    ):
+        """Under a flat timing prior, a pulsar with no data leaves Lambda singular.
+
+        On the informative path such a pulsar only shifts the likelihood by a
+        constant, so it is allowed. In the diffuse limit Lambda = A, so its
+        timing-model block has no information at all and the jitter — not the data —
+        would set the log-determinant. Refused rather than silently meaningless.
+        """
         mock_logger.return_value = Mock()
-        with pytest.raises(NotImplementedError, match="mask"):
+        data = self._with_mask(sample_pulsar_data)
+        data["processed_residuals"]["mask"][:, 0] = 0.0
+        with pytest.raises(ValueError, match="zero epochs"):
             jax_kalman_filter.JaxKalmanFilter(
-                data=self._with_mask(sample_pulsar_data),
-                use_gw=True,
-                use_marginal=True,
+                data=data, use_gw=True, timing_prior="diffuse"
             )
 
 

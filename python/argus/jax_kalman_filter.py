@@ -97,12 +97,38 @@ def compute_predicted_covariance(
     return jnp.block([[PF1, PF4, PF6], [PF4.T, PF2, PF5], [PF6.T, PF5.T, P3]])
 
 
-def _log_likelihood(y: jax.Array, cov: jax.Array) -> jax.Array:
+def _jitter_scale(cov: jax.Array, mask: jax.Array = None) -> jax.Array:
+    """Magnitude scale for the positive-definiteness jitter, ignoring absent slots.
+
+    Missing observations are handled by putting a *unit* variance in the absent slots
+    of the innovation covariance so it stays invertible (see ``_update``). PTA
+    innovation variances are ~1e-12, so a scale taken from the full trace is set by
+    those unit entries rather than by the data: at 12 epochs with one pulsar absent
+    the jitter came out ~300x larger than the variances it was supposed to perturb
+    negligibly, which shifted the masked log-likelihood by tens of nats and made the
+    two filter backends disagree by ~23 nats on a 60%-occupied MDC2 grid.
+
+    Averaging over the observed diagonal only fixes that. With no mask this is exactly
+    ``trace(cov) / n``, so the unmasked likelihood -- and the goldens -- are unchanged
+    bit-for-bit.
+    """
+    diagonal = jnp.diag(cov)
+    if mask is None:
+        return 1e-9 * (jnp.sum(diagonal) / diagonal.shape[0])
+    weight = mask / jnp.maximum(jnp.sum(mask), 1.0)
+    return 1e-9 * jnp.sum(weight * diagonal)
+
+
+def _log_likelihood(y: jax.Array, cov: jax.Array, mask: jax.Array = None) -> jax.Array:
     """Calculate the log likelihood given innovation and innovation covariance.
 
     Args:
         y: Innovation term (measurement residual), shape (n,)
         cov: Innovation covariance matrix, shape (n,n)
+        mask: Optional per-pulsar observation mask, shape (n,). Used only to keep the
+            jitter magnitude scale off the unit-variance absent slots (see
+            `_jitter_scale`); the absent slots' contribution to the log-det is
+            deliberately retained so the offset stays parameter-independent.
 
     Returns
     -------
@@ -117,8 +143,7 @@ def _log_likelihood(y: jax.Array, cov: jax.Array) -> jax.Array:
     # and reject any residually non-positive-definite `cov` rather than return garbage.
     n = cov.shape[0]
     cov = 0.5 * (cov + cov.T)
-    jitter = 1e-9 * (jnp.trace(cov) / n)
-    cov = cov + jitter * jnp.eye(n)
+    cov = cov + _jitter_scale(cov, mask) * jnp.eye(n)
     sign, logdet = jnp.linalg.slogdet(2.0 * jnp.pi * cov)
     quadratic_term = y.T @ jnp.linalg.solve(cov, y)
     ll = -0.5 * (logdet + quadratic_term)
@@ -363,7 +388,7 @@ def _predict_xi(Xi, F_gw, F_spin, gw_size):
     return jnp.vstack([F_gw @ Xi[:gw_size], F_spin @ Xi[gw_size:]])
 
 
-def _update_marginal(xp, Pp, Xi_pred, H_dyn, H_eps, R, z):
+def _update_marginal(xp, Pp, Xi_pred, H_dyn, H_eps, R, z, mask=None):
     """Joseph update of the dynamic state plus epsilon sensitivity/information accumulation.
 
     Runs the standard Joseph update on the dynamic state `x` (dim 4*Npsr) treating the
@@ -377,6 +402,16 @@ def _update_marginal(xp, Pp, Xi_pred, H_dyn, H_eps, R, z):
         H_eps: epsilon (timing design) columns of H, shape (Npsr, M_sum).
         R: measurement noise covariance, shape (Npsr, Npsr).
         z: observation, shape (Npsr,).
+        mask: optional per-pulsar observation mask, shape (Npsr,), 1.0 present and
+            0.0 absent. Handled by masking rather than reshaping, so array shapes
+            stay static for `scan`/JIT. Absent pulsars are exactly conditioned out:
+            their rows of H_dyn and H_eps are zeroed and their measurement variance
+            is replaced by unity, which drives the corresponding column of the gain
+            to zero and removes their contribution to every epsilon accumulator
+            (each is a quadratic form in Psi or y0, both of which vanish on masked
+            rows). The unit variance leaves a per-absent-pulsar log(2*pi) in the
+            log-det stream, exactly as the sequential filter does, so the two paths
+            agree and the offset is independent of the sampled parameters.
 
     Returns
     -------
@@ -385,8 +420,18 @@ def _update_marginal(xp, Pp, Xi_pred, H_dyn, H_eps, R, z):
             dA = Ψ' S⁻¹ Ψ (M_sum, M_sum), db = Ψ' S⁻¹ ỹ (M_sum, 1), dc = ỹ' S⁻¹ ỹ (scalar),
             dL = logdet(2π S) (or +inf if S is not positive definite, forcing logL -> -inf).
     """
+    # Mask absent observations. M = diag(mask): zeroing the absent rows of H and
+    # replacing their measurement variance with unity makes the update, the gain and
+    # every epsilon accumulator ignore them, with no change of array shape.
+    if mask is not None:
+        H_dyn = mask[:, None] * H_dyn
+        H_eps = mask[:, None] * H_eps
+        R = (mask[:, None] * mask[None, :]) * R + jnp.diag(1.0 - mask)
+
     # β=0 innovation and its sensitivity to β. S is β-independent (it never sees a mean).
     y0 = z[:, None] - H_dyn @ xp
+    if mask is not None:
+        y0 = mask[:, None] * y0
     S = H_dyn @ Pp @ H_dyn.T + R
     Psi = H_eps + H_dyn @ Xi_pred
 
@@ -394,8 +439,7 @@ def _update_marginal(xp, Pp, Xi_pred, H_dyn, H_eps, R, z):
     # so the log-det stream, the gain and the epsilon quadratics all use a single stable S.
     n = S.shape[0]
     S = 0.5 * (S + S.T)
-    jitter = 1e-9 * (jnp.trace(S) / n)
-    S = S + jitter * jnp.eye(n)
+    S = S + _jitter_scale(S, mask) * jnp.eye(n)
     sign, logdet = jnp.linalg.slogdet(2.0 * jnp.pi * S)
     Sinv = jnp.linalg.solve(S, jnp.eye(n))
 
@@ -492,7 +536,7 @@ def _run_kalman_filter_scan(
         z=data[0],
         mask=mask_matrices[0],
     )
-    ll0 = _log_likelihood(y, S)
+    ll0 = _log_likelihood(y, S, mask_matrices[0])
 
     def step(carry, inputs):
         x, P = carry
@@ -505,7 +549,7 @@ def _run_kalman_filter_scan(
         x_predict, P_predict = _predict(x, P, F, Q, dim_x)
 
         x_new, P_new, y, S = _update(x_predict, P_predict, H, R, z, mask)
-        ll = _log_likelihood(y, S)
+        ll = _log_likelihood(y, S, mask)
         return (x_new, P_new), ll
 
     # Pack inputs for scan - include precomputed matrices
@@ -544,6 +588,7 @@ def _run_kalman_filter_marginal(
     dim_x,
     n_states,
     P_eps_inv,
+    mask_matrices,
     diffuse=False,
 ):
     """Marginalized (Rao-Blackwellized) Kalman filter log likelihood.
@@ -579,6 +624,17 @@ def _run_kalman_filter_marginal(
     latter is parameter-independent, so the diffuse marginal likelihood is defined only up
     to an additive constant (harmless for posteriors and for Bayes factors between models
     sharing the same timing model, where it cancels). `P_eps_inv` is then unused.
+
+    `mask_matrices` has shape (nepoch, Npsr): entry (t, n) is 1.0 if pulsar n is observed
+    at epoch t and 0.0 if it is absent, matching `_run_kalman_filter_scan`. An all-ones
+    mask reproduces the every-pulsar-present likelihood exactly. This is what lets
+    union-grid array data (68 pulsars, ~42% grid occupancy) use the fast marginal path
+    instead of falling back to the sequential filter.
+
+    One caveat specific to this path: in `diffuse` mode Λ = A, so a pulsar absent at
+    *every* epoch contributes no information to its own timing-model block and leaves Λ
+    singular. That pulsar carries no data at all and does not belong in the dataset; the
+    filter rejects it at construction rather than returning a meaningless likelihood.
     """
     Γ = _effective_orf(hellings_downs_matrix, θ.orf_epsilon)
     σa2 = _compute_sigma_matrix(θ.ha**2, θ.γa, Γ)
@@ -607,11 +663,12 @@ def _run_kalman_filter_marginal(
         H_eps=H_eps_all[0],
         R=R_matrices[0],
         z=data[0],
+        mask=mask_matrices[0],
     )
 
     def step(carry, inputs):
         x, P, Xi, A, b, c, L = carry
-        z, R, H_dyn, H_eps, F_gw, F_spin, Q_gw, Q_spin = inputs
+        z, R, H_dyn, H_eps, mask, F_gw, F_spin, Q_gw, Q_spin = inputs
 
         F = (F_gw, F_spin)
         Q = (Q_gw, Q_spin)
@@ -621,7 +678,7 @@ def _run_kalman_filter_marginal(
         Xi_pred = _predict_xi(Xi, F_gw, F_spin, dim_x)
 
         x, P, Xi, dA, db, dc, dL = _update_marginal(
-            x_pred, P_pred, Xi_pred, H_dyn, H_eps, R, z
+            x_pred, P_pred, Xi_pred, H_dyn, H_eps, R, z, mask
         )
         return (x, P, Xi, A + dA, b + db, c + dc, L + dL), None
 
@@ -633,6 +690,7 @@ def _run_kalman_filter_marginal(
         R_matrices[1:],
         H_dyn_all[1:],
         H_eps_all[1:],
+        mask_matrices[1:],
         F_gw_all,
         F_spin_all,
         Q_gw_all,
@@ -701,11 +759,9 @@ class JaxKalmanFilter:
                 filter. The two are mathematically equivalent (identical log likelihood to
                 <1 nat on the MDC2 golden dataset), but the marginal path is faster (~1.4x on
                 A100, ~2x on CPU) because the propagated state shrinks from 4*Npsr + M_sum to
-                4*Npsr, cutting the per-epoch O(d^3) update. The default (None) selects the
-                marginal filter unless the data carry a per-epoch observation mask, which
-                only the sequential filter supports — masked data fall back to the
-                sequential path with a warning. Explicitly requesting use_marginal=True
-                together with a mask raises NotImplementedError.
+                4*Npsr, cutting the per-epoch O(d^3) update. Both backends support
+                per-epoch observation masks, so the default (None) selects the marginal
+                filter whether or not the data are masked.
             timing_prior: Prior on the linearized timing-model parameters β. "informative"
                 (default) uses the data-matched GLS prior P_eps = (MᵀN⁻¹M)⁻¹ and reproduces
                 the golden likelihood. "diffuse" takes the flat/improper limit P_eps⁻¹ → 0
@@ -731,22 +787,30 @@ class JaxKalmanFilter:
         # behaviour (backward compatible with MDC2 and the intersection-aligned feathers).
         self.mask = observations.get("mask", None)
 
-        # Resolve the filter backend. Masked epochs are only wired into the sequential
-        # augmented-state filter; the marginalized filter has no masked-update path yet.
+        # Both backends support masked epochs, so the marginalized (faster) filter is
+        # the default regardless of whether a mask is present. It previously fell back
+        # to the sequential path on masked data, which silently gave up the speedup on
+        # exactly the runs where it matters most (union-grid array data).
         if use_marginal is None:
-            use_marginal = self.mask is None
-            if self.mask is not None:
-                get_logger().warning(
-                    "Data carry a missing-observation mask: falling back to the "
-                    "sequential augmented-state filter (use_marginal=False); the "
-                    "marginalized filter does not yet support masked epochs."
+            use_marginal = True
+
+        # A pulsar observed at no epoch is fine on the informative-prior path: its
+        # timing-model block of A is zero, so Λ falls back to the prior precision and
+        # the -logdet(P_eps_inv) term cancels it exactly, leaving only a constant
+        # offset. In the diffuse limit Λ = A, so that block is left singular and the
+        # jitter — not the data — sets its log-determinant. That is a meaningless
+        # likelihood rather than an offset one, so it is refused.
+        if self.mask is not None and timing_prior == "diffuse":
+            unobserved = np.nonzero(np.asarray(self.mask).sum(axis=0) == 0)[0]
+            if unobserved.size:
+                names = data["metadata"]["name"].to_numpy()[unobserved]
+                raise ValueError(
+                    f"timing_prior='diffuse' with pulsars observed at zero epochs "
+                    f"{list(names)}: the flat prior leaves their timing-model "
+                    f"information singular, so the likelihood is not defined. Drop "
+                    f"them via excluded_psrs, or use timing_prior='informative'."
                 )
-        elif use_marginal and self.mask is not None:
-            raise NotImplementedError(
-                "use_marginal=True is not supported for data with a missing-observation "
-                "mask: the marginalized filter has no masked-update path. Omit "
-                "use_marginal (auto-fallback) or pass use_marginal=False."
-            )
+
         if timing_prior == "diffuse" and not use_marginal:
             raise ValueError(
                 "timing_prior='diffuse' is only supported on the marginalized filter "
@@ -877,6 +941,7 @@ class JaxKalmanFilter:
                 dim_x=2 * self.Npsr,
                 n_states=self.nx,
                 P_eps_inv=self.P_eps_inv,
+                mask_matrices=self.jax_mask_matrices,
                 diffuse=(self.timing_prior == "diffuse"),
             )
         return _run_kalman_filter_scan(
