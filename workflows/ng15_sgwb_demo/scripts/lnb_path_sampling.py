@@ -127,7 +127,12 @@ PHYSICAL_SITES = (
 )
 
 
-def evaluate_integrand(nc_path, config_path, thin=1, eps_site="orf_epsilon"):
+DEFAULT_BATCH_SIZE = 100
+
+
+def evaluate_integrand(
+    nc_path, config_path, thin=1, eps_site="orf_epsilon", batch_size=DEFAULT_BATCH_SIZE
+):
     """Compute the per-draw integrand ∂ ln L / ∂eps from a stored posterior.
 
     Done after the fact rather than during sampling on purpose. Recording the
@@ -135,6 +140,12 @@ def evaluate_integrand(nc_path, config_path, thin=1, eps_site="orf_epsilon"):
     higher-order autodiff on the most expensive part of the run, for a quantity
     NUTS never needs. Here each draw costs one extra gradient evaluation, paid once,
     on whatever hardware is free.
+
+    Draws are processed in batches of ``batch_size``. A single ``vmap`` over the whole
+    posterior would hold one differentiated Kalman pass per draw in memory at once —
+    at 33 pulsars and 183 epochs that is enough to be killed by the OOM reaper at a few
+    hundred draws, and the full-array posteriors are larger still. Batching keeps the
+    peak independent of how long the run was.
 
     Returns the same rung dict shape as ``load_rung``.
     """
@@ -209,9 +220,20 @@ def evaluate_integrand(nc_path, config_path, thin=1, eps_site="orf_epsilon"):
         return jax.grad(loglik)(eps_value)
 
     batched = jax.jit(jax.vmap(d_loglik_d_eps, in_axes=(None, 0, 0, 0, 0, 0, 0)))
-    integrand = np.asarray(
-        batched(eps, *[flat[site] for site in PHYSICAL_SITES]), dtype=float
-    )
+
+    n_draws = flat[PHYSICAL_SITES[0]].shape[0]
+    if batch_size is None or batch_size <= 0:
+        batch_size = n_draws
+    pieces = []
+    for start in range(0, n_draws, batch_size):
+        stop = min(start + batch_size, n_draws)
+        pieces.append(
+            np.asarray(
+                batched(eps, *[flat[site][start:stop] for site in PHYSICAL_SITES]),
+                dtype=float,
+            )
+        )
+    integrand = np.concatenate(pieces) if pieces else np.zeros(0)
 
     n_kept = integrand.size // n_chain
     integrand = integrand[: n_chain * n_kept].reshape(n_chain, n_kept)
@@ -532,6 +554,13 @@ def main():
         default=1,
         help="Use every Nth draw when evaluating the integrand (--evaluate only).",
     )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Draws per vmap batch when evaluating the integrand. Caps peak memory; "
+        "0 or negative means one batch (only safe for small posteriors).",
+    )
     p.add_argument("--integrand-site", default=INTEGRAND_SITE)
     p.add_argument("--eps-site", default="orf_epsilon")
     p.add_argument("--target-uncert", type=float, default=0.5)
@@ -548,7 +577,11 @@ def main():
     if args.evaluate:
         rungs = [
             evaluate_integrand(
-                path, args.evaluate, thin=args.thin, eps_site=args.eps_site
+                path,
+                args.evaluate,
+                thin=args.thin,
+                eps_site=args.eps_site,
+                batch_size=args.batch_size,
             )
             for path in paths
         ]
