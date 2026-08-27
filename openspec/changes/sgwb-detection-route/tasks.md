@@ -93,7 +93,7 @@
 
 ## 5. Kernel systematic (parallel; depends on the frozen procedure from 1.10)
 
-- [ ] 5.1 Generate the matched injection pair at the MDC2 geometry (γ = 13/3 power law and Argus's own
+- [x] 5.1 Generate the matched injection pair at the MDC2 geometry (γ = 13/3 power law and Argus's own
       OU process, same noise and epochs) with `scripts/inject_powerlaw_gwb.py`; verify both load
       cleanly through `get_processed_residuals` and their truth JSONs record the pivot amplitudes.
 - [ ] 5.2 Run both injections end-to-end through the frozen procedure; verify both converge to the

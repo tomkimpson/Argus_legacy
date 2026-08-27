@@ -203,6 +203,21 @@ def powerlaw_psd(freqs, log10_A, gamma):
     return (A**2 / (12.0 * np.pi**2)) * (freqs / F_YR) ** (-gamma) * F_YR**-3
 
 
+def ou_psd(freqs, log10_ha, log10_gamma_a):
+    """OU residual PSD ``S_r(f)=sigma_a2/((2 pi f)^2 (gamma_a^2+(2 pi f)^2))`` [s^3].
+
+    ``sigma_a2=(ha^2/12) gamma_a``. This is the same quantity ``powerlaw_psd`` returns for
+    the other shape, which is the point: a PTA constrains the spectrum over about a decade,
+    so the comparable observable between an OU and a power-law injection is the PSD at a
+    pivot frequency, not the spectral index. Recording it for both makes the downstream
+    comparison shape-agnostic.
+    """
+    w = 2.0 * np.pi * np.asarray(freqs, dtype=float)
+    gamma_a = 10.0**log10_gamma_a
+    sigma_a2 = (10.0**log10_ha) ** 2 / 12.0 * gamma_a
+    return sigma_a2 / (w**2 * (gamma_a**2 + w**2))
+
+
 def inject_powerlaw_gwb(toas, freqs, log10_A, gamma, L_hd, t0, rng):
     """HD-correlated true-power-law GWB via a frequency-domain Fourier-sum GP.
 
@@ -497,11 +512,25 @@ def run(args):
             t_shared, args.log10_ha, args.log10_gamma_a, Gamma, L_hd, rng
         )
         sigma_a2_diag = (10.0**args.log10_ha) ** 2 / 12.0 * 10.0**args.log10_gamma_a
+        f_band = 1.0 / (5.0 * SEC_PER_YEAR)  # band-centroid pivot (~1/5yr, in-band)
         truth.update(
             {
                 "log10_ha": args.log10_ha,
                 "log10_gamma_a": args.log10_gamma_a,
                 "sigma_a2_diag": sigma_a2_diag,
+                # Recorded for the OU shape too, in the same units and at the same
+                # pivots as the power-law branch. Without this the two injections of a
+                # matched pair cannot be compared at all: their native parameters
+                # (log10_A, gamma) and (log10_ha, log10_gamma_a) do not correspond, and
+                # the band-referenced PSD is the only common ground.
+                "pivot_psd_s3": {
+                    "f_yr": float(
+                        ou_psd(np.array([F_YR]), args.log10_ha, args.log10_gamma_a)[0]
+                    ),
+                    "f_band_1over5yr": float(
+                        ou_psd(np.array([f_band]), args.log10_ha, args.log10_gamma_a)[0]
+                    ),
+                },
                 "note": "OU residual PSD S_r(f)=sigma_a2_diag/((2 pi f)^2 (gamma_a^2+(2 pi f)^2)); "
                 "sigma_a2_diag=(ha^2/12) gamma_a.",
             }
