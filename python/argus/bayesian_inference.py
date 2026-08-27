@@ -818,7 +818,7 @@ def run_nuts_sampling(
         sampler.post_warmup_state = state
         sampler.run(sampler.post_warmup_state.rng_key)
         sampler.print_summary()
-        return az.from_numpyro(sampler)
+        return _record_orf_path_attrs(az.from_numpyro(sampler), prior_specs)
 
     if not settings["enabled"]:
         sampler = MCMC(
@@ -831,36 +831,59 @@ def run_nuts_sampling(
         )
         sampler.run(rng_key)
         sampler.print_summary()
-        return az.from_numpyro(sampler)
+        return _record_orf_path_attrs(az.from_numpyro(sampler), prior_specs)
 
-    return _run_nuts_with_checkpointing(
-        kernel=kernel,
-        rng_key=rng_key,
-        num_samples=num_samples,
-        num_warmup=num_warmup,
-        num_chains=num_chains,
-        chain_method=chain_method,
-        settings=settings,
-        config=config,
-        fingerprint_spec={
-            "mode": mode,
-            "n_pulsars": int(n_pulsars),
-            "num_samples": int(num_samples),
-            "num_warmup": int(num_warmup),
-            "num_chains": int(num_chains),
-            "seed": int(seed),
-            "nuts": {
-                key: nuts_info.get(key)
-                for key in (
-                    "target_accept_prob",
-                    "max_tree_depth",
-                    "dense_mass",
-                )
+    return _record_orf_path_attrs(
+        _run_nuts_with_checkpointing(
+            kernel=kernel,
+            rng_key=rng_key,
+            num_samples=num_samples,
+            num_warmup=num_warmup,
+            num_chains=num_chains,
+            chain_method=chain_method,
+            settings=settings,
+            config=config,
+            fingerprint_spec={
+                "mode": mode,
+                "n_pulsars": int(n_pulsars),
+                "num_samples": int(num_samples),
+                "num_warmup": int(num_warmup),
+                "num_chains": int(num_chains),
+                "seed": int(seed),
+                "nuts": {
+                    key: nuts_info.get(key)
+                    for key in (
+                        "target_accept_prob",
+                        "max_tree_depth",
+                        "dense_mass",
+                    )
+                },
+                "priors": _prior_fingerprint(prior_specs),
+                "data": _data_fingerprint(kalman_filter),
             },
-            "priors": _prior_fingerprint(prior_specs),
-            "data": _data_fingerprint(kalman_filter),
-        },
+        ),
+        prior_specs,
     )
+
+
+def _record_orf_path_attrs(inference_data, prior_specs):
+    """Stamp the correlation-path support onto the results.
+
+    The Bayes-factor estimators read the posterior density of eps AT the ends of its
+    prior support, so they must know where those ends are. Left to a default they would
+    assume the unit interval and, on a run configured with a narrower one, silently
+    evaluate the ratio at the wrong points -- a wrong answer with no symptom. Recording
+    the bounds with the draws makes that impossible.
+    """
+    if prior_specs.get("orf_path") == "sampled":
+        low, high = prior_specs["orf_epsilon_bounds"]
+        inference_data.attrs["orf_epsilon_min"] = float(low)
+        inference_data.attrs["orf_epsilon_max"] = float(high)
+    elif prior_specs.get("orf_path") == "fixed":
+        inference_data.attrs["orf_epsilon_fixed"] = float(
+            prior_specs["orf_epsilon_value"]
+        )
+    return inference_data
 
 
 def _data_fingerprint(kalman_filter):

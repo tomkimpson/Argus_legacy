@@ -144,12 +144,19 @@ def evaluate_integrand(nc_path, config_path, thin=1, eps_site="orf_epsilon"):
     import arviz as az
     import jax
 
-    from argus import bayesian_inference, workflow
+    from argus import bayesian_inference, io_manager, utils, workflow
 
     config = configparser.ConfigParser()
     if not config.read(config_path):
         raise ValueError(f"Could not read config {config_path}")
+    # Config paths are written relative to the config file, exactly as the run
+    # harness reads them; resolve them the same way so this can be invoked from
+    # anywhere rather than only from the workflow directory.
+    config = utils.resolve_config_paths(config, config_path)
 
+    # The Kalman filter logs through the package's own logger, which the run harness
+    # normally initialises; do it here so this is usable outside a full run.
+    io_manager.setup_single_logger(config, enable_file_logging=False)
     logger = logging.getLogger("lnb_path_sampling")
     _, kalman_filter = workflow.setup_data_and_kalman_filter(
         config, logger, use_gw=True

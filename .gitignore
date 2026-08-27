@@ -89,6 +89,7 @@ workflows/ng15_sgwb_demo/data/staging_subset/
 workflows/ng15_sgwb_demo/data/staging_full/
 # M1 MDC2 per-pulsar staging (symlinks; regenerate with stage_mdc2.py)
 workflows/ng15_sgwb_demo/data/mdc2_singles/
+workflows/ng15_sgwb_demo/data/mdc2_all
 # M1 Stage A artifacts ARE tracked (small; inputs to Stages B/C) — *.pkl is
 # globally ignored above, so whitelist the medians pickle explicitly
 !workflows/ng15_sgwb_demo/data/stage_a_medians.pkl

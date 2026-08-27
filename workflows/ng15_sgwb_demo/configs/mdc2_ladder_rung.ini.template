@@ -1,0 +1,85 @@
+# M1 task 1.7 (estimator B): one rung of the path-sampling ladder.
+#
+# eps is FIXED at ORF_EPSILON, so this run samples the posterior of the model
+# whose overlap reduction function is C(eps) = (1-eps)*I + eps*C_HD. The ladder's
+# integrand is E[d logL / d eps] at each rung, evaluated afterwards from the saved
+# posterior by scripts/lnb_path_sampling.py --evaluate.
+#
+# The rung value is substituted by the SLURM script, which writes a derived config
+# per rung -- this file is the template and is not run directly.
+#
+# Fewer draws than the eps-sampled run (task 1.6): the ladder needs the posterior
+# MEAN of one scalar per rung to modest precision, not a well-resolved posterior
+# for every parameter. Sized from that, per the change design.
+
+[Data]
+data_path = ../data/mdc2_all
+excluded_psrs = __NONE__
+
+[NUTS]
+num_samples = 1000
+num_warmup = 1000
+num_chains = 4
+target_accept_prob = 0.9
+max_tree_depth = 8
+dense_mass = false
+dense_mass_blocks = log10_pivot_psd_prime, log10_gamma_a_prime
+
+[PriorModel]
+
+# 1. GW background parameters — SAMPLED
+log10_ha_fixed = false
+log10_ha_value = -12.5
+log10_ha_min = -16.0
+log10_ha_max = -9.0
+
+log10_gamma_a_fixed = false
+log10_gamma_a_value = -8.5
+log10_gamma_a_min = -11.0
+log10_gamma_a_max = -6.0
+
+# Ridge GW parameterization (issue #109): sample the band-referenced pivot
+# log-PSD + log10_gamma_a as independent coordinates, deriving log10_ha, to
+# straighten the curved ha<->gamma_a ridge that stalled the direct-basis runs
+# (one chain per run got stuck at high amplitude, r_hat 1.5-2.3). The pivot
+# log-PSD range [-13,-5] brackets both the injected (~-6.3) and the direct-run
+# recovered (~-9.2) values with room; pivot f = 1/(5 yr).
+gw_parameterization = ridge
+log10_pivot_psd_min = -13.0
+log10_pivot_psd_max = -5.0
+gw_pivot_freq_hz = 6.3376e-09
+
+# Correlation path held at one rung of the ladder.
+orf_path = fixed
+orf_epsilon_value = __EPS_VALUE__
+
+# 2. Pulsar red noise — SAMPLED with empirical per-pulsar priors
+spin_injections_path =
+empirical_priors_path = ../data/stage_a_empirical_priors.json
+empirical_prior_inflation = 2.0
+
+log10_gamma_p_min = -12.0
+log10_gamma_p_max = -6.0
+log10_sigma_p_min = -20.0
+log10_sigma_p_max = -12.0
+
+# 3. EFAC/EQUAD — FIXED from MDC2 truth
+noise_params_path = ../../data/IPTA_MockDataChallenge2/group1_psr_noise.json
+
+efac_min = 0.5
+efac_max = 2.0
+log10_equad_min = -8.0
+log10_equad_max = -6.0
+
+[Checkpointing]
+enabled = true
+interval = 250
+resume = false
+
+[Logging]
+level = INFO
+enable_file_logging = false
+
+[Output]
+output_id = mdc2_ladder_eps__EPS_TAG__
+base_dir = {output_id}
