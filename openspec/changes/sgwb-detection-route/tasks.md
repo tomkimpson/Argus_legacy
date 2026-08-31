@@ -21,13 +21,13 @@
 - [x] 1.5 Add the reliability gate to `logz_lhm.py` so it returns `reliable: false` with the named
       failing diagnostic instead of `nan`; verify it reports `reliable: false` on the stored 68-D
       MDC2 Stage C posterior and `reliable: true` on the 2-D MDC2 anchor.
-- [ ] 1.6 Run estimator A on MDC2 Stage C (single array run with `ε` sampled, ridge basis, empirical
+- [x] 1.6 Run estimator A on MDC2 Stage C (single array run with `ε` sampled, ridge basis, empirical
       priors) and record `lnB`, `p(ε|d)` and diagnostics; verify the run converges (r̂ ≤ 1.01 on
       sampled sites, divergences ≤ 1%).
-- [ ] 1.7 Run the estimator B ladder on MDC2 Stage C (pilot ladder first, then refined from the
+- [x] 1.7 Run the estimator B ladder on MDC2 Stage C (pilot ladder first, then refined from the
       measured `∂lnL/∂ε` curvature); verify the discretisation error is smaller than the reported
       `lnB` uncertainty.
-- [ ] 1.8 Decide the bake-off in writing: if A and B agree within combined uncertainties, freeze A as
+- [x] 1.8 Decide the bake-off in writing: if A and B agree within combined uncertainties, freeze A as
       the production procedure with B as audit; otherwise freeze B and discard A. Verify by a
       committed decision note recording both numbers and the rule that was applied.
 - [ ] 1.9 Run the frozen estimator on the MDC2 no-injection control and verify it returns `lnB`
