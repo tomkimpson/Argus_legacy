@@ -1,0 +1,91 @@
+# POSITIVE CONTROL: one rung of the path-sampling ladder on MDC2 open dataset 1b.
+#
+# Dataset 2b, which M1 used, is a published non-detection: the IPTA MDC2 results paper
+# (arXiv:1912.12939) reports Bayes factors of 1.1-2.6 for it under every search method,
+# against their own detection threshold of 3, and our path-sampling estimator returned
+# lnB = 0.175 +/- 0.017 there -- consistent with the literature, and not a detection.
+#
+# Dataset 1b has a SMALLER injected amplitude (0.66e-15 vs 1.3e-15, so injected pivot
+# log-PSD -6.908 vs -6.319) but NO per-pulsar red noise, and the same paper reports it
+# was strongly detected: B = 40 (free WN) to infinity (fixed WN), amplitude measured at
+# 0.7 +0.4/-0.3 e-15. Per-pulsar red noise is covariant with a common red background, and
+# that -- not amplitude -- is what makes 2b undetectable for everyone.
+#
+# So 1b is the dataset on which a working pipeline MUST return a decisive answer, and it
+# carries an independent published number to check against. See
+# notes/mdc2_literature_check.md.
+#
+# The rung value is substituted by the SLURM script; this file is the template and is not
+# run directly.
+
+[Data]
+data_path = ../data/mdc2_d1_all
+excluded_psrs = __NONE__
+
+[NUTS]
+num_samples = 1000
+num_warmup = 1000
+num_chains = 4
+target_accept_prob = 0.9
+max_tree_depth = 8
+dense_mass = false
+dense_mass_blocks = log10_pivot_psd_prime, log10_gamma_a_prime
+
+[PriorModel]
+
+# 1. GW background parameters — SAMPLED
+log10_ha_fixed = false
+log10_ha_value = -12.5
+log10_ha_min = -16.0
+log10_ha_max = -9.0
+
+log10_gamma_a_fixed = false
+log10_gamma_a_value = -8.5
+log10_gamma_a_min = -11.0
+log10_gamma_a_max = -6.0
+
+# Ridge GW parameterization (issue #109): sample the band-referenced pivot
+# log-PSD + log10_gamma_a as independent coordinates, deriving log10_ha, to
+# straighten the curved ha<->gamma_a ridge that stalled the direct-basis runs
+# (one chain per run got stuck at high amplitude, r_hat 1.5-2.3). The pivot
+# log-PSD range [-13,-5] brackets both the injected (~-6.3) and the direct-run
+# recovered (~-9.2) values with room; pivot f = 1/(5 yr).
+gw_parameterization = ridge
+log10_pivot_psd_min = -13.0
+log10_pivot_psd_max = -5.0
+gw_pivot_freq_hz = 6.3376e-09
+
+# Correlation path held at one rung of the ladder.
+orf_path = fixed
+orf_epsilon_value = __EPS_VALUE__
+
+# 2. Pulsar red noise — SAMPLED with empirical per-pulsar priors
+spin_injections_path =
+empirical_priors_path = ../data/stage_a_d1_empirical_priors.json
+empirical_prior_inflation = 2.0
+
+log10_gamma_p_min = -12.0
+log10_gamma_p_max = -6.0
+log10_sigma_p_min = -20.0
+log10_sigma_p_max = -12.0
+
+# 3. EFAC/EQUAD — FIXED from MDC2 truth
+noise_params_path = ../../data/IPTA_MockDataChallenge2/group1_psr_noise.json
+
+efac_min = 0.5
+efac_max = 2.0
+log10_equad_min = -8.0
+log10_equad_max = -6.0
+
+[Checkpointing]
+enabled = true
+interval = 250
+resume = false
+
+[Logging]
+level = INFO
+enable_file_logging = false
+
+[Output]
+output_id = mdc2_d1_ladder_eps__EPS_TAG__
+base_dir = {output_id}

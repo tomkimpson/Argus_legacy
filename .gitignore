@@ -92,6 +92,9 @@ workflows/ng15_sgwb_demo/data/mdc2_singles/
 workflows/ng15_sgwb_demo/data/mdc2_all
 # Ladder rung configs are derived from the template by the SLURM script at runtime
 workflows/ng15_sgwb_demo/configs/mdc2_ladder_eps[0-9]*.ini
+workflows/ng15_sgwb_demo/configs/mdc2_d1_ladder_eps[0-9]*.ini
+workflows/ng15_sgwb_demo/data/mdc2_d1_all
+workflows/ng15_sgwb_demo/data/mdc2_d1_singles/
 # M1 Stage A artifacts ARE tracked (small; inputs to Stages B/C) — *.pkl is
 # globally ignored above, so whitelist the medians pickle explicitly
 !workflows/ng15_sgwb_demo/data/stage_a_medians.pkl

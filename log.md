@@ -1,5 +1,118 @@
 # Research log
 
+## 2026-09-01 — Correlation-path evidence machinery; MDC2 HD-vs-CURN lnB = 0.175 (gate FAILS)
+
+**Goal.** Replan the route to an SGWB detection (#111) into an executable plan, then execute
+its critical path: replace the learned harmonic mean with an evidence estimator that
+survives at array scale, and get a calibrated HD-vs-CURN Bayes factor on MDC2 dataset 2b.
+
+**What was tried.** Planning first: the roadmap was re-cut as the OpenSpec change
+`openspec/changes/sgwb-detection-route`, on the judgement that #111's flow was overtaken by
+its own results — LHM was known broken at 68-D, M2's core question was already half-answered
+by T2.4, and M1->M3 was a single leap from 33 mock to 68 real pulsars. The change adds an
+estimator bake-off, an empirical null calibration, an intermediate NG15 subset stage, and
+demotes M2 from blocking gate to parallel systematic.
+
+Execution then took the whole critical path. Both hypotheses were embedded in one model by
+interpolating the ORF, `C(eps) = (1-eps)*I + eps*C_HD`
+(`gravitational_waves.correlation_path`, config `orf_path` in `[PriorModel]`), so CURN and HD
+became two points of a single posterior. Two estimators were built over it: generalised
+Savage-Dickey on the endpoint density ratio (one run) and path sampling over a fixed-eps
+ladder (five runs). Both were validated against a shared analytic problem
+(`ln Z = a*eps^3`, so lnB = a exactly) before touching real data, and both were given
+reliability gates that refuse rather than report.
+
+Supporting work that the campaign needed: masks ported into the marginalized Kalman filter
+(the union-grid fallback to the sequential path was silently costing 5.4x on exactly the runs
+that matter); NUTS checkpoint/resume; the sky-scramble null generator and warm starts; and
+the matched power-law/OU injection pair at the MDC2 geometry for the kernel systematic.
+
+Six A100 runs on MDC2 Stage C: five ladder rungs at eps = 0, 0.25, 0.5, 0.75, 1.0 (~5h40m
+each) and one eps-sampled run (9h47m).
+
+**What was learned.** **lnB(HD/CURN) = 0.1754 +/- 0.0171**, reliable on every diagnostic
+(Romberg residual 0.0000 against a 0.1 ceiling, min integrand ESS 279). Odds 1.19:1. That
+**fails the change's own lnB >= 3 MDC2 gate**, which per `sgwb/array-analysis-procedure`
+blocks M3 until diagnosed.
+
+The diagnosis is that the amplitude itself is only marginally detected: at the pure-HD rung
+the pivot log-PSD is -6.714 with 16-84% [-9.837, -6.083], and **27% of the posterior lies
+below -9, i.e. GW-negligible**. Amplitude lives in common auto-power that CURN reproduces
+exactly; HD-vs-CURN rests only on the weaker cross-correlations. So 0.175 is arithmetically
+right given the posterior, and the estimators are not at fault. This also reframes M1's
+"truth gate PASS at -0.35 sigma" as a weak statement — coverage with a +/-1.76 dex error bar.
+
+Sampling was excellent throughout: **0% divergences in all six runs**, max r_hat 1.02, all
+four chains tracking together. The ridge basis plus the correlation path sample cleanly at
+69-D, in sharp contrast to the direct-basis Stage B/C runs (r_hat 1.5-2.3, one chain parked
+at high amplitude in every case).
+
+Estimator A failed in a way that was not predicted. The design expected eps to pile against 1
+on a signal-bearing dataset, emptying the CURN endpoint and tripping `endpoint_occupancy`.
+Instead the **eps posterior came out essentially uniform** (mean 0.512, both endpoints
+populated at ~5%), and A failed on fold agreement — it cannot resolve a quantity of size 0.1
+to better than ~0.3. The near-uniform eps posterior is the finding in its most direct form:
+the array carries almost no information about how HD-like the correlation is.
+
+Four defects surfaced, three of them mine and one pre-existing and serious:
+
+1. **The masked likelihood was wrong**, in the sequential mask path from PR #113. Absent
+   observations get a unit-variance placeholder, but the PD jitter was scaled as
+   `1e-9 * trace(S)/n` — so the placeholders, not the data, set the jitter, inflating it
+   ~1e12x against ~1e-12 innovation variances. MDC2 at 41.6% occupancy: marginal-vs-sequential
+   agreement went 7e-4 -> 2.3e-6; the offset from masking one pulsar out went -65.50 ->
+   -11.0273, which is exactly the predicted -0.5*n*ln(2pi). Unmasked results and both goldens
+   bit-for-bit unchanged.
+2. Savage-Dickey at Silverman's bandwidth is biased low by ~0.16 nats (over-smoothing flattens
+   the endpoint ratio); h->0 extrapolation cuts it ~4x.
+3. My first discretisation diagnostic for path sampling was **vacuous**: on a uniform grid
+   Simpson *is* the Richardson extrapolation of the trapezoid rule, so their difference is
+   identically zero. Replaced with a genuine Romberg estimate.
+4. `evaluate_integrand` vmapped every draw at once, so peak memory scaled with run length —
+   200 draws worked, 400 was OOM-killed, and the 4000-draw posteriors would never have fitted.
+
+**Decisions / dead ends.** **Path sampling frozen as the production estimator**; Savage-Dickey
+kept as a cheap one-run first look. Worth recording that the pre-committed bake-off rule ("if
+A and B agree within combined uncertainties, freeze A with B as audit") was **underspecified
+and did not decide this case**: it assumed both estimators would be reliable and never
+anticipated A agreeing on the value (0.105 +/- 0.095, 0.73 sigma from B) while refusing to
+certify it. Freezing A would have adopted an estimator that declines to report in exactly the
+regime the project is in, so B was frozen on the rule's intent rather than its letter.
+
+**Product-space / hypermodel sampling was rejected**, despite being the shortlisted
+PTA-favourite and the name in M1's task M1.6. The classic Carlin-Chib construction samples a
+discrete model index, which NUTS cannot do, and its pseudo-priors need per-parameter tuning at
+68-D — the exact regime where LHM already failed. Do not revisit it.
+
+**LHM is not merely broken at high-D, it is biased high.** Its uncalibrated matched-shrinkage
+range on this same Stage C pair was 1.8 to 8.6 against a calibrated 0.175 — an order of
+magnitude, in the direction of a spurious detection. It now refuses with named diagnostics
+instead of returning `nan`. The 6-psr NG15 lnB = +2.1 from T3.4 (2026-07-12) was 18-D and
+passed its diagnostics, but has never been cross-checked against path sampling; it should be
+re-derived on the correlation path before being quoted.
+
+A guard I had invented — rejecting all-zero-mask pulsars outright — was removed as
+contradicting the spec, and survives scoped to `diffuse` mode only, where Lambda = A really is
+singular. The OU corner for the injection pair was moved from 10^-8.5 to 10^-9.0: over a 15 yr
+baseline the former sits only ~4x below the lowest sampled frequency, leaving a 0.024 dex
+imprint of the corner placement on a measurement meant to isolate spectral shape.
+
+**Open threads.** The question blocking M3: **is the marginal amplitude intrinsic to MDC2 2b
+at 33 pulsars, or is the two-stage empirical-prior noise treatment absorbing the common signal
+into per-pulsar red noise?** Single-pulsar posteriors are known to be overconfident for exactly
+this reason, which is why `empirical_prior_inflation = 2.0` exists — and whether 2.0 is enough
+has never been tested. Three diagnostics, cheapest first: (1) a literature check for published
+MDC2 detection statistics, since MDC2 is a public challenge and a quoted number would settle
+"is it us or the data" for the cost of a reading session; (2) an inflation sweep at 1/2/4 on
+the eps = 0 and 1 rungs; (3) a louder-injection scaling test using the pair built for task 5.1.
+
+If all three say "machinery fine, data quiet", the remaining decision is a scope one: whether
+M3's claim rests on amplitude plus a scramble-calibrated significance rather than a decisive
+Bayes factor, which would mean rewriting the acceptance gate in `sgwb/model-selection`.
+
+Also untested at scale: the masked marginal filter (the 68-pulsar benchmark needs M3's
+feathers), the scramble generator, and the whole null-calibration campaign.
+
 ## 2026-07-18 — T3.5: full-68 NUTS ruled unsamplable; strategic pivot (full-array SGWB is a stepping stone)
 
 **Goal.** Fire the final full-68 convergence lever — keep the dense GW block, raise

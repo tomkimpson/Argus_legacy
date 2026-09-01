@@ -48,6 +48,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)  # workflows/ng15_sgwb_demo
 REPO = os.path.dirname(os.path.dirname(ROOT))
 
+# Default run-directory prefix. Overridable so a second dataset's Stage A runs can
+# live alongside the first in outputs/ without their results being mixed together.
 RUN_PREFIX = "mdc2_stageA_"
 
 # Prior edges of configs/mdc2_stage_a.ini, used for the rail check.
@@ -200,6 +202,12 @@ def main():
     ap.add_argument(
         "--report-dir", default=os.path.join(ROOT, "outputs", "stage_a_summary")
     )
+    ap.add_argument(
+        "--run-prefix",
+        default=RUN_PREFIX,
+        help="Prefix of the Stage A run directories to collect "
+        f"(default: {RUN_PREFIX!r}).",
+    )
     ap.add_argument("--rhat-max", type=float, default=1.05)
     ap.add_argument("--ess-min", type=float, default=200.0)
     ap.add_argument(
@@ -226,11 +234,11 @@ def main():
     )
     args = ap.parse_args()
 
-    run_dirs = sorted(glob.glob(os.path.join(args.results_dir, RUN_PREFIX + "*")))
+    run_dirs = sorted(glob.glob(os.path.join(args.results_dir, args.run_prefix + "*")))
     run_dirs = [d for d in run_dirs if os.path.isdir(d)]
     if not run_dirs:
         raise SystemExit(
-            f"No {RUN_PREFIX}* run directories under {args.results_dir} — has the "
+            f"No {args.run_prefix}* run directories under {args.results_dir} — has the "
             "Stage A array job finished?"
         )
 
@@ -240,7 +248,7 @@ def main():
     results, missing = {}, []
     for run_dir in run_dirs:
         tag = os.path.basename(run_dir)
-        psr = tag[len(RUN_PREFIX) :]
+        psr = tag[len(args.run_prefix) :]
         nc_path = os.path.join(run_dir, f"{tag}_results.nc")
         if not os.path.exists(nc_path):
             missing.append(psr)
@@ -342,7 +350,7 @@ def main():
         "_meta": {
             "generated": datetime.now(timezone.utc).isoformat(),
             "git_sha": _git_sha(),
-            "source_runs": [RUN_PREFIX + p for p in kept],
+            "source_runs": [args.run_prefix + p for p in kept],
             "dropped": sorted(failures),
             "note": "loc/scale are posterior mean/std of the Stage A single-pulsar "
             "runs; scales are inflated at load time via empirical_prior_inflation",
