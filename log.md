@@ -1,5 +1,98 @@
 # Research log
 
+## 2026-09-04 — Positive control on MDC2 1b FAILS: the two-stage noise procedure absorbs the GWB
+
+**Goal.** Decide whether the low MDC2 Bayes factor (lnB = 0.175 on dataset 2b) was the data or
+our pipeline, and act on the answer.
+
+**What was tried.** Three diagnostics were queued, cheapest first, on the reasoning that a
+published benchmark on a public dataset beats standing up a reference implementation.
+
+The **literature check** came first and answered the original question outright. Hazboun et al.
+(arXiv:1912.12939) report MDC2 open dataset 2b — identified exactly against our local truth
+JSON on amplitude, spectral index, pulsar count, baseline, cadence and the b variant — as a
+**non-detection under every search method they tried**: Bayes factors 1.1-2.6 against their own
+declared threshold of 3, and an amplitude *upper limit* of <1.4e-15 against the 1.3e-15
+injection. Their B is HD-vs-noise-only where ours is HD-vs-CURN; ratioing their HD and CRN rows
+gives B(HD/CURN) ~ 0.88, lnB ~ -0.13, against our +0.175. Both indistinguishable from zero.
+
+That exonerated the pipeline on 2b and, more usefully, pointed at a better test. Their dataset
+1b has a *smaller* injected amplitude (0.66e-15 vs 1.3e-15) but **no per-pulsar red noise**, and
+was strongly detected: B = 40 (free WN) to infinity (fixed WN), with a real amplitude
+measurement 0.7 +0.4/-0.3 e-15 against 0.66 injected. Red noise is covariant with a common red
+background, and that — not amplitude — is what makes 2b undetectable for everyone.
+
+So 1b became the **positive control**: a dataset where a working pipeline must return a decisive
+answer, carrying an independent published number to check against. Ingested `dataset_1b` to
+feathers, staged 33 per-pulsar directories, ran the full frozen procedure — Stage A (33 jobs,
+all PASS, no railing), empirical-prior extraction, then the 5-rung path-sampling ladder.
+
+**What was learned.** **The control failed, and the failure is ours.**
+
+    ln B(HD/CURN) = 0.0527 +/- 0.0039   [reliable, every gate passes]
+    integrand flat at ~0.05 across the whole eps path (0.044, 0.051, 0.045, 0.057, 0.065)
+
+The decisive evidence is not the Bayes factor — that comparison needs care, since their headline
+B is a different and easier question. It is the **amplitude**. The prior on the pivot log-PSD is
+N(-9.0, 1.333); the injected truth is -6.908, i.e. +1.57 prior-sigma from the centre. At all five
+rungs the posterior sd is **95-99% of the prior sd** and the centre is shifted less than half a
+prior-sigma, *away* from truth. The posterior is the prior. The published analysis measures this
+amplitude; we recover no information about it at all.
+
+**The mechanism.** Stage A fits each pulsar alone with the GW fixed at log10_ha = -20, so by
+design its red-noise posterior absorbs the *total* per-pulsar red power — the config header says
+exactly this. Stage C then uses those posteriors as PRIORS on per-pulsar red noise. The joint fit
+therefore begins from a state where all the common power is already explained as 33 independent
+noise processes; adding GW amplitude would over-explain the data, so the GW drifts back to its
+prior. We subtract the signal, then look for it in the residual.
+`empirical_prior_inflation = 2.0` was the intended safeguard, but it widens the priors without
+moving their *centres*, and the centres are what is wrong.
+
+The mechanism predicts the effect is worst where the GWB is a larger fraction of the red power
+Stage A absorbs, and that prediction holds: 1b (GWB is all of it) gives 0.053, 2b (diluted by
+real injected red noise) gives 0.175 — three times larger on the *dirtier* dataset. Stage A's own
+numbers corroborate the dilution: median log10_sigma_p = -16.70 on 1b against -16.01 on 2b, with
+2b higher in 24 of 33 pulsars.
+
+**Decisions / dead ends.** **The 2b result no longer validates anything.** Its agreement with the
+literature is plausibly coincidental — both near zero, for different reasons — so it cannot be
+cited as evidence the pipeline works. **M1's "Stage C truth gate PASS at -0.35 sigma" is
+reinterpreted as passing by being uninformative**: a +/-1.8 dex posterior covers the truth
+because it covers everything. Breadth was read as success when it was the symptom. And M1 never
+had a positive control; that omission is what hid this for two months.
+
+Deliberately bounded what is *not* implicated: the likelihood (goldens bit-identical, masked and
+marginal paths agree to 6e-12), the estimators (validated analytically, mutually consistent at
+0.73 sigma), the sampler and ridge geometry (44 of 44 SLURM runs converged, 0% divergences,
+r_hat <= 1.02), and the OU kernel mismatch (~0.2 dex, not a factor of 100). The defect is
+confined to the noise-modelling procedure between the data and the likelihood.
+
+The **prior-inflation sweep and louder-injection test, planned as the next experiments, were both
+superseded** — the first because the literature said the 2b confusion was intrinsic, the second
+because 1b is strictly better than a synthetic injection (it carries a published reference value).
+Running the cheap literature check first saved both.
+
+**Open threads.** The mechanism is strongly indicated but **not yet proven by removal**. The
+decisive test is one configuration change: run 1b at eps=0 and eps=1 with
+`red_noise_prior = flat`, dropping the empirical priors (~9 h GPU). Same 68 dimensions as the
+runs that just sampled cleanly, so the sampling risk is low. If the amplitude moves from -9.5
+toward -6.9, diagnosis and fix are confirmed together.
+
+If confirmed, the noise treatment must be replaced: flat/weak per-pulsar priors sampled jointly
+(the field standard — NANOGrav fixes white noise only and samples red noise jointly via PTMCMC),
+or a hierarchical population prior learned from the array itself rather than pre-committed from
+single-pulsar fits. Both return issue #115 (joint noise+GW formulation) to the critical path.
+
+Worth re-testing rather than assuming: the T3.5 verdict that joint sampling is *unsamplable*
+predates the ridge parameterization that fixed one of its two named pathologies, was at ~142-D
+rather than 68-D, and — the part that matters most — **wide priors cost nothing in dimension**.
+Flat and empirical per-pulsar priors sample the same 68 parameters at 33 pulsars; the empirical
+scheme narrows priors, it does not reduce dimensionality.
+
+The acceptance gate in `sgwb/model-selection` also needs re-pointing: from 2b (a published
+non-detection, unreachable by anyone) to 1b, with a positive control made a standing requirement,
+since the gate as written can be passed by an uninformative posterior.
+
 ## 2026-09-01 — Correlation-path evidence machinery; MDC2 HD-vs-CURN lnB = 0.175 (gate FAILS)
 
 **Goal.** Replan the route to an SGWB detection (#111) into an executable plan, then execute
