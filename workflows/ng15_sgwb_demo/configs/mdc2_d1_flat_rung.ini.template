@@ -1,0 +1,112 @@
+# REMOVAL TEST: does dropping the empirical red-noise priors recover the GWB on 1b?
+#
+# The positive control on MDC2 1b FAILED with the frozen two-stage procedure:
+# lnB(HD/CURN) = 0.0527 +/- 0.0039, and -- the decisive number -- a pivot log-PSD
+# posterior whose sd is 95-99% of the prior sd, centred less than half a prior-sigma
+# from N(-9.0, 1.333) and drifting AWAY from the injected -6.908. The posterior is the
+# prior. The published analysis (arXiv:1912.12939) measures this amplitude at
+# 0.7 +0.4/-0.3 e-15 against 0.66 injected, so the information is in the data.
+#
+# Diagnosis: Stage A fits each pulsar alone with the GW fixed at log10_ha = -20, so its
+# red-noise posterior absorbs the TOTAL per-pulsar red power, GWB included. Stage C then
+# uses those posteriors as PRIORS, so the joint fit starts with all common power already
+# explained as 33 independent noise processes and the GW has nothing left to claim.
+# See notes/PROBLEM_empirical_priors_absorb_gwb.md.
+#
+# This file is that diagnosis tested by REMOVAL. It is
+# configs/mdc2_d1_ladder_rung.ini.template with exactly one change: the empirical
+# per-pulsar priors are gone (no empirical_priors_path, no empirical_prior_inflation)
+# and the red noise is sampled under independent flat Uniforms instead. Everything else
+# -- ridge GW basis, EFAC/EQUAD fixed from MDC2 truth, orf_path = fixed, NUTS settings,
+# prior ranges -- is held identical, so the comparison isolates the noise priors.
+#
+# Dimension is UNCHANGED at 68 (2 GW + 2x33 red noise): flat priors are wider, not more
+# numerous, and the empirical runs at this dimension all converged cleanly (0%
+# divergences, r_hat <= 1.02). Sampling risk is therefore low, though wide priors do make
+# the GW<->red-noise degeneracy explicit, which is the real inference problem.
+#
+# Only the two ladder ENDPOINTS are run here (eps = 0 and 1). This is a diagnostic on the
+# amplitude posterior, not a Bayes factor: two rungs cannot integrate the path. If the
+# amplitude moves toward -6.908, the full 5-rung ladder follows.
+#
+# The rung value is substituted by the SLURM script; this file is the template and is not
+# run directly.
+
+[Data]
+data_path = ../data/mdc2_d1_all
+excluded_psrs = __NONE__
+
+[NUTS]
+num_samples = 1000
+num_warmup = 1000
+num_chains = 4
+target_accept_prob = 0.9
+max_tree_depth = 8
+dense_mass = false
+dense_mass_blocks = log10_pivot_psd_prime, log10_gamma_a_prime
+
+[PriorModel]
+
+# 1. GW background parameters — SAMPLED
+log10_ha_fixed = false
+log10_ha_value = -12.5
+log10_ha_min = -16.0
+log10_ha_max = -9.0
+
+log10_gamma_a_fixed = false
+log10_gamma_a_value = -8.5
+log10_gamma_a_min = -11.0
+log10_gamma_a_max = -6.0
+
+# Ridge GW parameterization (issue #109): sample the band-referenced pivot
+# log-PSD + log10_gamma_a as independent coordinates, deriving log10_ha, to
+# straighten the curved ha<->gamma_a ridge that stalled the direct-basis runs
+# (one chain per run got stuck at high amplitude, r_hat 1.5-2.3). The pivot
+# log-PSD range [-13,-5] brackets both the injected (~-6.9 on 1b) and the
+# empirical-prior recovered (~-9.5) values with room; pivot f = 1/(5 yr).
+gw_parameterization = ridge
+log10_pivot_psd_min = -13.0
+log10_pivot_psd_max = -5.0
+gw_pivot_freq_hz = 6.3376e-09
+
+# Correlation path held at one rung of the ladder.
+orf_path = fixed
+orf_epsilon_value = __EPS_VALUE__
+
+# 2. Pulsar red noise — SAMPLED under independent flat Uniform priors.
+#
+# THIS IS THE ONE CHANGE UNDER TEST. The empirical block was:
+#     empirical_priors_path = ../data/stage_a_d1_empirical_priors.json
+#     empirical_prior_inflation = 2.0
+# and is deliberately absent: empirical_priors_path takes PRECEDENCE over
+# red_noise_prior in get_pulsar_noise_priors, so setting flat is not enough --
+# the path must be gone. Ranges are the same as the empirical runs, which is
+# what makes this a removal rather than a reparameterization.
+spin_injections_path =
+red_noise_prior = flat
+
+log10_gamma_p_min = -12.0
+log10_gamma_p_max = -6.0
+log10_sigma_p_min = -20.0
+log10_sigma_p_max = -12.0
+
+# 3. EFAC/EQUAD — FIXED from MDC2 truth
+noise_params_path = ../../data/IPTA_MockDataChallenge2/group1_psr_noise.json
+
+efac_min = 0.5
+efac_max = 2.0
+log10_equad_min = -8.0
+log10_equad_max = -6.0
+
+[Checkpointing]
+enabled = true
+interval = 250
+resume = false
+
+[Logging]
+level = INFO
+enable_file_logging = false
+
+[Output]
+output_id = mdc2_d1_flat_eps__EPS_TAG__
+base_dir = {output_id}
