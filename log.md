@@ -1,5 +1,105 @@
 # Research log
 
+## 2026-09-06 — The removal test confirms it: flat red-noise priors recover the GWB on 1b
+
+**Goal.** Prove or refute the 2026-09-04 diagnosis — that the two-stage empirical-prior noise
+procedure absorbs the GWB — by removing the empirical priors and nothing else.
+
+**What was tried.** `configs/mdc2_d1_flat_rung.ini.template` is
+`mdc2_d1_ladder_rung.ini.template` with exactly one change, verified by diff: the two
+empirical lines out, `red_noise_prior = flat` in, plus the `output_id`. Ridge basis,
+EFAC/EQUAD fixed from truth, `orf_path = fixed`, NUTS settings and every prior range held
+identical, so the comparison isolates the noise priors and nothing else.
+
+Two things were checked before spending queue time, both of which mattered. First,
+`empirical_priors_path` takes **precedence** over `red_noise_prior` in
+`get_pulsar_noise_priors` (`prior_models.py:264`) — the empirical branch returns before the
+flat branch is reached, so setting `flat` alone would have silently produced a duplicate of
+the run it was meant to control against. The path had to be *removed*. Both job scripts now
+hard-fail if it reappears. Second, a CPU dry run confirmed both configs build 33-element
+flat Uniforms with `empirical_specs = None`, i.e. the same 68 sampled sites as the empirical
+runs (`parameter_sampling.py:394-410`).
+
+Ran the two endpoints first (`mdc2_d1_flat_ladder.sh`, eps = 0 and 1) as a pure amplitude
+diagnostic, then infilled eps = 0.25, 0.5, 0.75 (`mdc2_d1_flat_infill.sh`) to complete the
+frozen 5-point grid and get a Bayes factor.
+
+**What was learned.** **The diagnosis is confirmed and the fix works.**
+
+    pivot log-PSD, eps=1:  empirical -9.507 (sd/prior_sd 0.99)  ->  flat -6.466 (sd/prior_sd 0.21)
+    ln B(HD/CURN):         empirical 0.0527 +/- 0.0039          ->  flat 3.043 +/- 0.0148
+    injected truth: -6.908
+
+A 3-dex move onto the injected value. The posterior stopped being the prior: sd falls from
+99% of prior width to 21% at full Hellings-Downs. All four gates on the path-sampling
+estimator pass — Romberg residual 0.0015 against a 0.1 ceiling, min integrand ESS 921
+against a floor of 50, endpoints covered, `reliable: true`.
+
+The obvious worry — that flat priors merely leave the per-pulsar red noise unconstrained so
+the GW hoovers up all the common power by default — does **not** hold. Per-pulsar posterior
+sd is 0.218, i.e. 9.4% of the Uniform(-20,-12) prior sd, with 0/33 railing and the 33
+medians spanning only -16.23 to -15.31. The red noise is pinned by the data; the GW wins the
+degeneracy on evidence. That the median (-16.08) sits near the prior midpoint (-16) is
+coincidence.
+
+Sampling was a non-issue. Every rung converged with 0% divergences and r_hat <= 1.003, in
+1.5-2.5 h on 4 A100s. The fear that wide priors would blow up the tree depth was unfounded,
+and 68-D joint noise+GW sampling is evidently not the obstacle issue #115 assumed at 33
+pulsars.
+
+**Two corrections to yesterday's write-up.** (1) The mechanism in
+`notes/PROBLEM_empirical_priors_absorb_gwb.md` predicted the right outcome but is not the
+right story. Under flat priors *both* the GW (-6.5) and the red noise (-16.08) end up higher
+than under empirical (-9.5, -17.79) — not a clean see-saw. The empirical Stage C posterior
+also drifted 1.25 dex *below* its own prior centre (-16.54 implied by the Stage A locs),
+which the x2 inflation made an unremarkable ~0.6 sigma excursion. Don't restate "Stage A
+inflates the red noise, Stage C inherits it" without re-deriving it. (2) I predicted the
+path-sampling integrand would *rise* with eps once the fix was in. It falls monotonically,
+4.69 -> 1.56. That is fine — the integrand is d lnZ/d eps, so what matters is that it is
+positive and large throughout, meaning evidence accumulates all the way to Hellings-Downs.
+The empirical ladder's failure signature was its *magnitude* (~0.05, i.e. near zero), not
+its slope.
+
+**Decisions / dead ends.** **The two-stage empirical-prior noise treatment is dead.** Not
+worth further tuning: larger inflation was already predicted to fail because the centres are
+wrong rather than the widths, and the removal test shows the whole scheme is unnecessary at
+this scale. Flat per-pulsar priors sampled jointly — the field standard — simply work.
+
+**The MDC2 1b amplitude sits 1.57 sigma high** at eps=1 (median -6.466 vs -6.908, +0.44 dex),
+with the truth near the lower edge of the 95% CI [-7.03, -5.94]. It formally passes, but only
+just. The OU-vs-power-law kernel mismatch independently accounts for ~0.2 dex of that, not
+obviously all of it. Folding this into M2's gamma=13/3 work rather than chasing it separately.
+
+**A queue casualty, not a code fault.** Array task `16212052_1` (eps=0.5) was `CANCELLED by 0`
+after 2m09s as `milan-gpu` came back from a partition-down window; no log file was ever
+written and no output dir created. Resubmitted alone with `sbatch --array=1` so the two
+surviving tasks were undisturbed. Worth remembering that a cancelled array task on this
+cluster can leave literally no trace in `outputs/logfiles/`.
+
+**Open threads.** The headline number is not yet defensible, for two distinct reasons.
+
+1. **No null has ever been run.** `openspec/changes/sgwb-detection-route/.../model-selection/spec.md`
+   requires both an injected-signal case (now passing) *and* a null case returning lnB
+   consistent with zero. `scripts/sky_scrambles.py` exists but has never been executed — no
+   scramble artefacts in `data/` or `outputs/`, despite the branch being named
+   `feat/sgwb-null-calibration`. Until a scramble returns ~0, lnB = 3.04 does not separate
+   "we detect the signal" from "flat priors manufacture HD evidence."
+2. **1b is the dataset where flat priors are the true model** — it has no injected per-pulsar
+   red noise. Generalisation to data that does (2b) is untested. Expect lnB ~ 0 there but an
+   *informative* amplitude upper limit near Hazboun's <1.4e-15, rather than a return of the
+   prior. That is what would make flat priors defensible rather than validated on the easy case.
+
+Also unresolved: our lnB(HD/CURN) = 3.04 against the ~0.55 implied by ratioing Hazboun's
+HD(40)/CRN(23) rows for g1.d1 — a factor ~12 in odds. The ratio is rough (their rows may
+differ in white-noise treatment, and their headline B is GW-vs-noise-only), so this is not
+necessarily a discrepancy, but it must be resolved before claiming agreement with the
+literature. And 3.043 clears the lnB >= 3 gate by 0.043, which invites the question of
+whether the gate was tuned to the answer; the amplitude recovery is the stronger evidence
+and should lead any write-up.
+
+The gate spec itself still needs re-pointing from 2b to 1b, with a positive control made a
+standing requirement.
+
 ## 2026-09-04 — Positive control on MDC2 1b FAILS: the two-stage noise procedure absorbs the GWB
 
 **Goal.** Decide whether the low MDC2 Bayes factor (lnB = 0.175 on dataset 2b) was the data or
