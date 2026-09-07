@@ -1,5 +1,92 @@
 # Research log
 
+## 2026-09-07 — The sky-scramble null passes: the flat-prior lnB tracks correlation, not prior width
+
+**Goal.** Run the null half of `sgwb/model-selection`, which had never been run despite the
+branch being named for it. Yesterday's flat-prior ladder gave lnB(HD/CURN) = 3.043 on MDC2 1b;
+that number does not separate "we detect the Hellings-Downs correlation" from "flat red-noise
+priors let the GW claim any common power going." The way to tell is to destroy the correlation
+pattern and change nothing else.
+
+**What was tried.** `scripts/sky_scrambles.py` and the `[WarmStart]` machinery already existed
+and were unit-tested, but nothing connected either to a run: no scramble artefacts anywhere, and
+no driver. Exhaustive grep confirmed there is no config key for the ORF at all — it reaches the
+filter through the data dict (`data["hd_correlation"]`), which is exactly why `run_curn.py`
+swaps in the identity by monkeypatching `get_processed_residuals` rather than editing the
+library. The null driver is that file with the identity replaced by an accepted scramble.
+
+Two traps were identified before spending queue time and both mattered. First,
+`lnb_path_sampling.py --evaluate` does not read the integrand out of the rung files; it
+recomputes it, rebuilding data and filter via `workflow.setup_data_and_kalman_filter`. That
+reload picks up the TRUE ORF even when every rung was sampled under a scrambled one, and would
+have returned a well-formed, `reliable: true`, entirely meaningless number — the ORF fingerprint
+in `bayesian_inference` guards *resume*, not the estimator. Second, that file must not be edited
+at all: `sgwb/model-selection` freezes the production evidence procedure, so a scramble flag on
+it would have marked the 3.043 stale. Both are solved by `scripts/lnb_scrambled.py`, which
+installs the same override and delegates, leaving the estimator byte-identical.
+
+One accepted scramble (seed 0, match 0.0025 against the true ORF, threshold 0.2), cold with full
+warmup, full 5-rung ladder, `configs/mdc2_d1_null_rung.ini.template` differing from the flat
+template by exactly one line (`output_id`), verified by diff.
+
+**What was learned.** **The null passes.**
+
+    ln B(HD/CURN)   null -0.7656 +/- 0.0097     flat +3.0431 +/- 0.0148
+    integrand       -0.386 -> -1.130            +4.695 -> +1.558
+
+Both `reliable: true`, all gates clear with room. The integrand flips sign completely and is
+monotonic at every rung, so the null integral is not small values cancelling. Flat priors do not
+manufacture Hellings-Downs evidence; the amplitude recovery and the 3.043 both stand.
+
+**The null is negative, not zero, and that is the correct answer.** -0.766 sits 79 sigma from
+zero in the estimator's own uncertainty. Imposing a *wrong* correlation pattern on data that
+contains a real one fits actively worse than assuming no correlation at all, so a scramble on
+signal-bearing data must land below zero; a near-zero result would have been the surprise. The
+sign of the penalty is itself evidence that the estimator responds to geometry rather than to
+prior width. Supporting this, at eps=0.75 the amplitude posterior is 3.3x wider under the
+scramble (sd 0.972 vs 0.292) at essentially the same centre — expected, since scrambling
+preserves the ORF diagonal, so each pulsar's auto-power and hence the common signal is untouched
+and only cross-correlation information is lost.
+
+A correctness check came for free. At eps=0 the ORF is the identity for any geometry, so
+`mdc2_d1_null_eps000` and `mdc2_d1_flat_eps000` sample the same target — and they agree
+**bitwise**, all 13 posterior variables over 4000 draws, max absolute difference exactly 0,
+across genuinely distinct files written three days apart on different nodes, with the null run's
+log confirming the scramble was installed. Pre-flight separately confirmed on the real data that
+patched and unpatched loads differ in `hd_correlation` and nothing else. All five rungs: 0
+divergences.
+
+**Decisions / dead ends.** **A sky scramble is not the no-injection control, and the spec was
+reworded to stop conflating them.** "lnB consistent with zero" is the criterion for a dataset
+with no correlated signal to mis-describe; MDC2 group1 has no such dataset
+(`group1_gw_parameters.json` holds dataset1 and dataset2 as GWB and dataset3 as a CW source), so
+task 1.9 still needs a synthesised signal-free set at the 1b geometry or an explicit decision to
+drop it. `sgwb/model-selection` now carries a separate "Falsification by sky scramble" scenario,
+and its injected-signal scenario was re-pointed from 2b to **1b** — 2b is a published
+non-detection, so lnB >= 3 was never reachable on it and the old gate tested the dataset rather
+than the estimator.
+
+**Warm starts were deliberately not used**, though they exist and would have halved the cost:
+`checkpointing.py` requires validating them against full-warmup runs first, and a gate result
+should not depend on tuning borrowed from the signal run. This cold ladder is that baseline.
+
+**N=1 gives no false-alarm probability.** The honest bound is `p < 1`; the +/- 0.0097 is
+numerical precision, not scramble-to-scramble scatter. Deliberately not slipped into this run.
+
+**Open threads.** The ensemble that would turn lnB into a significance costs ~40 A100-hours per
+realisation, so ~4000 for 100 — almost certainly unaffordable, and the null-calibration spec
+requires scaling the claim to what compute allows rather than quoting a resolution the ensemble
+cannot support. Unchanged from yesterday and still the bigger risks: 1b has no injected
+per-pulsar red noise so flat priors were the true model there, making the 2b flat ladder the next
+substantive test; the OU-vs-power-law kernel systematic (tasks 5.2-5.5) is barely started and is
+the largest remaining scientific exposure for a real-data claim; and our lnB 3.04 against the
+~0.55 implied by ratioing Hazboun's HD/CRN rows is still unresolved.
+
+**Operational.** Run the path-sampling readout as a SLURM CPU job, not on the login node. This
+one took 6h33m (~85 min/rung) holding 36 GB resident against the ~30 min recorded for the flat
+ladder, purely because the login node was cgroup-limited to 1 core at load average 17.5. It
+survived, but a multi-hour 36 GB login-node process can be reaped at any moment.
+
 ## 2026-09-06 — The removal test confirms it: flat red-noise priors recover the GWB on 1b
 
 **Goal.** Prove or refute the 2026-09-04 diagnosis — that the two-stage empirical-prior noise

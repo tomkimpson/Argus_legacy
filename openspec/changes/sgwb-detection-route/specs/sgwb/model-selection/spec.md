@@ -53,15 +53,34 @@ estimators SHALL be evaluated.
 ### Requirement: Validation against a known-signal case gates production use
 
 An evidence estimator SHALL NOT be used on real data until it returns a decisively positive
-`lnB(HD/CURN)` on a dataset with a known injected Hellings–Downs signal, and a value consistent
-with no correlated signal on a matched dataset without one.
+`lnB(HD/CURN)` on a dataset with a known injected Hellings–Downs signal, and SHALL additionally be
+shown to respond to the inter-pulsar correlation pattern rather than to the flexibility of its
+priors. A positive control on its own does not distinguish the two.
+
+The injected-signal case is pinned to **MDC2 dataset 1b**, not 2b. 2b is a published non-detection
+— Hazboun et al. (arXiv:1912.12939) report Bayes factors of 1.1–2.6 against their own threshold of
+3 and an amplitude upper limit below the injection — so `lnB >= 3` was never reachable on it by any
+method, and a gate demanding it tested the dataset rather than the estimator. 1b is strongly
+detected in the same paper and is the dataset the gate can actually discriminate on.
 
 #### Scenario: Injected-signal case
 
-- **WHEN** the estimator is run on the MDC2 dataset 2b array posterior (known injected GWB)
+- **WHEN** the estimator is run on the MDC2 dataset 1b array posterior (known injected GWB)
 - **THEN** it returns `lnB(HD/CURN) >= 3` with `reliable: true`
 
-#### Scenario: Null case
+#### Scenario: Falsification by sky scramble
+
+- **WHEN** the estimator is run on the same injected-signal data with the pulsar sky positions
+  scrambled, so the correlation pattern is destroyed and every other input is unchanged
+- **THEN** it returns a `lnB(HD/CURN)` decisively below the unscrambled value with `reliable: true`,
+  demonstrating that the evidence tracks the correlation pattern and is not an artefact of the
+  red-noise priors
+
+  Note the scrambled value is expected to be **negative, not zero**: a wrong correlation pattern
+  describes signal-bearing data worse than no correlation does. "Consistent with zero" is the
+  criterion for the no-injection case below, where there is no correlation to mis-describe.
+
+#### Scenario: Null case — no injected correlated signal
 
 - **WHEN** the estimator is run on a matched dataset with no injected correlated signal
 - **THEN** it returns `lnB(HD/CURN)` consistent with zero within its stated uncertainty

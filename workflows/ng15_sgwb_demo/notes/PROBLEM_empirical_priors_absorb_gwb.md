@@ -1,7 +1,21 @@
 # The two-stage noise procedure absorbs the gravitational-wave background
 
-**Status:** diagnosed, mechanism strongly indicated, not yet proven by removal.
-**Blocks:** M3, and any detection claim from Argus's array pipeline.
+**Status:** **RESOLVED (2026-09-07).** Proven by removal and confirmed against a null.
+`red_noise_prior = flat` (empirical priors deleted, everything else held identical) moves the
+pivot log-PSD 3 dex onto the injected truth on MDC2 1b and lifts `lnB(HD/CURN)` from
+0.053 +/- 0.004 to 3.043 +/- 0.015. A sky scramble of the same data then returns
+-0.766 +/- 0.010, so the recovered evidence tracks the correlation pattern rather than the
+width of the priors. The two-stage empirical-prior procedure is dead; do not tune it further.
+See `RESULTS_null_calibration_scramble.md` and the 2026-09-06/07 entries in `log.md`.
+
+Two corrections to the mechanism described below, from the removal test: under flat priors
+*both* the GW (-6.5) and the red noise (-16.08) end up higher than under empirical (-9.5,
+-17.79), so it is not a clean see-saw; and the path-sampling integrand *falls* with eps
+(4.69 -> 1.56) rather than rising. The prediction was right, the story underneath it was not
+— re-derive before restating it.
+
+**Blocks:** nothing further. (Previously: M3, and any detection claim from Argus's array
+pipeline.)
 **Date:** 2026-09-04 · **Branch:** `feat/sgwb-null-calibration` · **Issue:** #111
 
 ---

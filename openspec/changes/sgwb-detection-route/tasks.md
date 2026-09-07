@@ -32,6 +32,10 @@
       committed decision note recording both numbers and the rule that was applied.
 - [ ] 1.9 Run the frozen estimator on the MDC2 no-injection control and verify it returns `lnB`
       consistent with zero and `reliable: true` — the negative control the injected case cannot give.
+      NOT closed by the 4.2b sky scramble: a scramble mis-describes a correlation that is present, so
+      it lands below zero by construction. This needs a dataset with no correlated signal, and MDC2
+      group1 has none (dataset1/2 are GWB, dataset3 is a CW source) — so it needs a synthesised
+      signal-free set at the 1b geometry, or an explicit decision to drop it.
 - [ ] 1.10 Record the frozen evidence configuration as a versioned config file plus a one-line
       provenance stamp written into every run's outputs; verify a run records which frozen version it
       used.
@@ -79,6 +83,15 @@
 - [x] 4.2 Add a warm-start mode that reuses a completed run's tuned step size and mass matrix and
       samples without re-adaptation; verify it reproduces the parent run's posterior on the unscrambled
       ORF.
+- [x] 4.2b Run ONE full-warmup scramble at 33 pulsars end-to-end through the frozen estimator as a
+      falsification check on the injected-signal result; verify the estimator responds to the
+      correlation pattern and that flat priors are not manufacturing HD evidence. DONE on MDC2 1b:
+      `lnB = -0.766 +/- 0.010` (`reliable: true`) against `+3.043 +/- 0.015` with the true ORF, with
+      the integrand negative and monotonic at every rung. Negative, not zero, is the correct answer
+      here — a wrong correlation pattern fits worse than none on data that contains a real one. This
+      is a falsification check, NOT a false-alarm probability: N=1 bounds only `p < 1`. Cold ladder,
+      so it is also the full-warmup baseline 4.3 compares against. See
+      `workflows/ng15_sgwb_demo/notes/RESULTS_null_calibration_scramble.md`.
 - [ ] 4.3 Run a small pilot set of scrambles at 33 pulsars both warm-started and with full warmup;
       verify the two statistic distributions agree before warm-starting is used for the ensemble.
 - [ ] 4.4 Measure statistic variance vs chain length on the pilot scrambles and choose the ensemble

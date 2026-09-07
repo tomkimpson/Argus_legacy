@@ -161,6 +161,74 @@ def apply_scramble(data, scrambled_orf):
     return scrambled
 
 
+def install_scramble_override(
+    npz_path, index, match_threshold=DEFAULT_MATCH_THRESHOLD
+):
+    """Patch the data loader so this process analyses a scrambled ORF.
+
+    The scramble has to reach BOTH the sampler and the path-sampling integrand
+    evaluation, and those build their data independently -- ``workflow.run_inference``
+    for the first, ``workflow.setup_data_and_kalman_filter`` for the second. Both go
+    through ``get_processed_residuals``, so patching that one seam covers both. Patching
+    only the run driver would leave the Bayes factor computed against the TRUE ORF: a
+    plausible-looking, meaningless number that nothing else in the pipeline would catch,
+    since the ORF fingerprint guards resume rather than the estimator.
+
+    This is the intervention ``run_curn.py`` makes for the identity, done here for the
+    same reason it is done there rather than in the library: the ORF reaches the filter
+    through the data dict, not through any config key, so there is nothing to set.
+
+    The match is RECOMPUTED from the stored ``true_orf`` rather than read from the
+    ``matches`` array, and the run is refused if it fails the threshold. Trusting the
+    stored value would let a mis-indexed or hand-edited archive through; recomputing
+    means an unaccepted scramble cannot be analysed silently.
+    """
+    from argus import data_loader
+
+    with np.load(npz_path) as archive:
+        orfs = archive["orfs"]
+        true_orf = archive["true_orf"]
+        stored_matches = archive["matches"]
+
+    n_scrambles = int(orfs.shape[0])
+    if not 0 <= index < n_scrambles:
+        raise IndexError(
+            f"scramble index {index} out of range: {npz_path} holds {n_scrambles}."
+        )
+
+    scrambled_orf = np.asarray(orfs[index], dtype=float)
+    match = orf_match(scrambled_orf, true_orf)
+    if match >= match_threshold:
+        raise ValueError(
+            f"scramble {index} has match {match:.4f} against the true ORF, at or above "
+            f"the {match_threshold} threshold: it re-tests Hellings-Downs rather than "
+            f"the null. Regenerate the ensemble or pick another index."
+        )
+
+    _orig = data_loader.LoadWidebandPulsarData.get_processed_residuals
+
+    def _patched(directory, excluded_psrs=[], mode="gwb"):
+        data = _orig(directory, excluded_psrs=excluded_psrs, mode=mode)
+        hd = data.get("hd_correlation")
+        if hd is None:
+            raise RuntimeError("[SCRAMBLE] hd_correlation is None; expected gwb mode.")
+        if np.asarray(hd).shape != scrambled_orf.shape:
+            raise RuntimeError(
+                f"[SCRAMBLE] ORF shape mismatch: data {np.asarray(hd).shape} vs "
+                f"scramble {scrambled_orf.shape}. Wrong dataset for this archive?"
+            )
+        print(
+            f"[SCRAMBLE] Overrode hd_correlation with scramble {index} of {n_scrambles} "
+            f"from {npz_path} ({scrambled_orf.shape[0]}x{scrambled_orf.shape[0]}, "
+            f"recomputed match {match:.4f}, stored {stored_matches[index]:.4f}) — "
+            f"the correlation pattern is destroyed, the data is untouched."
+        )
+        return apply_scramble(data, scrambled_orf)
+
+    data_loader.LoadWidebandPulsarData.get_processed_residuals = staticmethod(_patched)
+    return {"index": index, "match": match, "n_scrambles": n_scrambles}
+
+
 def summarise(result, true_orf):
     """Report the ensemble's match distribution and acceptance."""
     matches = result["matches"]

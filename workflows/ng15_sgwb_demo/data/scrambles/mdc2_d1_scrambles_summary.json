@@ -1,0 +1,11 @@
+{
+  "n_scrambles": 1,
+  "match_threshold": 0.2,
+  "match_mean": 0.002456615753877753,
+  "match_median": 0.002456615753877753,
+  "match_max": 0.002456615753877753,
+  "self_match": 1.0,
+  "n_attempts": 1,
+  "acceptance_rate": 1.0,
+  "seed": 0
+}

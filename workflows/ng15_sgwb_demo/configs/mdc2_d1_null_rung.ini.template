@@ -1,0 +1,118 @@
+# NULL CALIBRATION: the same 1b data under a SCRAMBLED sky geometry.
+#
+# The flat-prior ladder on MDC2 1b returned lnB(HD/CURN) = 3.043 +/- 0.015 with the pivot
+# log-PSD recovered onto the injected -6.908. A Bayes factor on its own does not say
+# whether that came from the Hellings-Downs correlation or from flat priors letting the GW
+# claim any common power it likes. The way to tell is to destroy the correlation pattern
+# and change nothing else.
+#
+# A sky scramble draws random positions for the 33 pulsars, rebuilds the overlap reduction
+# function from them, and analyses the SAME residuals, epochs and per-pulsar noise under
+# that wrong geometry. The accepted scramble here (data/scrambles/mdc2_d1_scrambles.npz,
+# seed 0, index 0) has an ORF match of 0.0025 against the true one -- effectively
+# orthogonal -- and is as well conditioned as the truth (cond 7.3 vs 7.7), so nothing in
+# the result can be attributed to a degenerate correlation matrix.
+#
+#   lnB ~ 0, integrand flat and near zero  => 3.043 measures correlation. Null passes.
+#   lnB ~ 3                                => flat priors manufacture HD evidence, and the
+#                                             amplitude result needs re-examining before
+#                                             anything downstream is run.
+#
+# This file is configs/mdc2_d1_flat_rung.ini.template with the output_id changed and
+# NOTHING else, so lnB_null and lnB_flat are comparable term-for-term. The scrambled ORF
+# is NOT set here: the ORF reaches the filter through the data dict rather than any config
+# key, so it is injected at runtime by run_scrambled.py (and, critically, by
+# scripts/lnb_scrambled.py at Bayes-factor time as well -- lnb_path_sampling.py rebuilds
+# the data from this config and would otherwise integrate against the TRUE ORF).
+#
+# Deliberately NO [WarmStart] section. Warm starts exist for a scramble ensemble
+# (checkpointing.py:239) and would halve the cost, but their docstring requires validating
+# them against full-warmup runs first, and a gate result should not depend on tuning
+# borrowed from the signal run. This ladder is that full-warmup baseline.
+#
+# Note eps = 0 is CURN for ANY geometry -- correlation_path interpolates toward the
+# identity, which does not depend on the ORF. The eps000 rung must therefore reproduce
+# mdc2_d1_flat_eps000 (integrand 4.695 +/- 0.061) within MC error; that is a free check
+# that the override landed correctly.
+#
+# The rung value is substituted by the SLURM script; this file is the template and is not
+# run directly.
+
+[Data]
+data_path = ../data/mdc2_d1_all
+excluded_psrs = __NONE__
+
+[NUTS]
+num_samples = 1000
+num_warmup = 1000
+num_chains = 4
+target_accept_prob = 0.9
+max_tree_depth = 8
+dense_mass = false
+dense_mass_blocks = log10_pivot_psd_prime, log10_gamma_a_prime
+
+[PriorModel]
+
+# 1. GW background parameters — SAMPLED
+log10_ha_fixed = false
+log10_ha_value = -12.5
+log10_ha_min = -16.0
+log10_ha_max = -9.0
+
+log10_gamma_a_fixed = false
+log10_gamma_a_value = -8.5
+log10_gamma_a_min = -11.0
+log10_gamma_a_max = -6.0
+
+# Ridge GW parameterization (issue #109): sample the band-referenced pivot
+# log-PSD + log10_gamma_a as independent coordinates, deriving log10_ha, to
+# straighten the curved ha<->gamma_a ridge that stalled the direct-basis runs
+# (one chain per run got stuck at high amplitude, r_hat 1.5-2.3). The pivot
+# log-PSD range [-13,-5] brackets both the injected (~-6.9 on 1b) and the
+# empirical-prior recovered (~-9.5) values with room; pivot f = 1/(5 yr).
+gw_parameterization = ridge
+log10_pivot_psd_min = -13.0
+log10_pivot_psd_max = -5.0
+gw_pivot_freq_hz = 6.3376e-09
+
+# Correlation path held at one rung of the ladder.
+orf_path = fixed
+orf_epsilon_value = __EPS_VALUE__
+
+# 2. Pulsar red noise — SAMPLED under independent flat Uniform priors.
+#
+# THIS IS THE ONE CHANGE UNDER TEST. The empirical block was:
+#     empirical_priors_path = ../data/stage_a_d1_empirical_priors.json
+#     empirical_prior_inflation = 2.0
+# and is deliberately absent: empirical_priors_path takes PRECEDENCE over
+# red_noise_prior in get_pulsar_noise_priors, so setting flat is not enough --
+# the path must be gone. Ranges are the same as the empirical runs, which is
+# what makes this a removal rather than a reparameterization.
+spin_injections_path =
+red_noise_prior = flat
+
+log10_gamma_p_min = -12.0
+log10_gamma_p_max = -6.0
+log10_sigma_p_min = -20.0
+log10_sigma_p_max = -12.0
+
+# 3. EFAC/EQUAD — FIXED from MDC2 truth
+noise_params_path = ../../data/IPTA_MockDataChallenge2/group1_psr_noise.json
+
+efac_min = 0.5
+efac_max = 2.0
+log10_equad_min = -8.0
+log10_equad_max = -6.0
+
+[Checkpointing]
+enabled = true
+interval = 250
+resume = false
+
+[Logging]
+level = INFO
+enable_file_logging = false
+
+[Output]
+output_id = mdc2_d1_null_eps__EPS_TAG__
+base_dir = {output_id}
